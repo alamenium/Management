@@ -4,7 +4,7 @@
 // - Storage via Netlify Blobs (@netlify/blobs)
 //
 // ENV required:
-//   ADMIN_PIN   (e.g., 1234)
+//   ADMIN_PIN   (e.g., 1234).
 //   AUTH_SECRET (long random string)
 // Optional:
 //   STORE_NAME  (defaults to "teamhub")
