@@ -179,7 +179,7 @@ Created by: ${createdBy || "-"}
 Notes:
 ${notes || "-"}
 
-Task ID: ${clampStr(payload.taskId, 120) || "-"}
+Check it out: https://capstone.alnajdi.com
 
 — Silicon Hall Management
 `;
