@@ -1,0 +1,9 @@
+{
+  "name": "teamhub-netlify",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Team Hub (static + Netlify functions)",
+  "dependencies": {
+    "@netlify/blobs": "^7.3.0"
+  }
+}
