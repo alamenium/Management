@@ -87,8 +87,17 @@ const pinFooter =
 const themeBtn = $("#themeBtn");
 const themeLbl = $("#themeLbl");
 const lockBtn = $("#lockBtn");
-const whoSwitch = $("#whoSwitch");
-const whoPill = $("#whoPill");
+// --- "Who are you?" UI (supports multiple HTML variants) ---
+const whoSwitch =
+    document.querySelector("#whoSwitch") ||
+    document.querySelector("#whoBtn") ||
+    document.querySelector("[data-who-switch]");
+
+const whoPill =
+    document.querySelector("#whoPill") ||
+    document.querySelector("#whoName") ||
+    document.querySelector("[data-who-pill]");
+
 const whoDialog = $("#whoDialog");
 const whoList = $("#whoList");
 const whoOk = $("#whoOk");
@@ -235,13 +244,23 @@ function setPinFooter(t){
 
 
 function setMeByKey(key){
-  const p = PEOPLE.find(x=>x.key===key);
+  const p = PEOPLE.find(x => x.key === key);
   if (!p) return;
+
   me = p;
   localStorage.setItem(LS_ME, p.key);
-  whoPill.textContent = p.name;
-  whoSwitch.textContent = p.name;
+
+  // These elements may not exist depending on your HTML version
+  if (whoPill)   whoPill.textContent = p.name;
+  if (whoSwitch) whoSwitch.textContent = p.name;
+
+  // Optional: also update header/subtitle if you have one
+  const anyLabel =
+      document.querySelector("[data-who-label]") ||
+      document.querySelector("#currentUserLabel");
+  if (anyLabel) anyLabel.textContent = p.name;
 }
+
 
 async function unlockWithPin(pin){
   if (!pin) return false;
