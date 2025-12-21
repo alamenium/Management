@@ -6,13 +6,13 @@
 // NOTE: Firestore security rules must allow your team to read/write.
 // If you see "permission-denied", update rules in Firebase console.
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-analytics.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc,
   collection, addDoc, deleteDoc, onSnapshot,
   query, orderBy, serverTimestamp, writeBatch
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+} from "https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js";
 
 /* Firebase config (hardcoded) */
 const firebaseConfig = {
