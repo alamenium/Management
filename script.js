@@ -62,11 +62,27 @@ function teamKeys(){
 }
 
 /* DOM */
-const authOverlay = $("#authOverlay");
-const pinForm = $("#pinForm");
-const pinInput = $("#pinInput");
-const pinMsg = $("#pinMsg");
-const pinFooter = $("#pinFooter");
+// --- Auth/PIN UI (supports both old + new IDs) ---
+const authOverlay =
+    document.querySelector("#authOverlay") ||
+    document.querySelector("#pinOverlay") ||
+    document.querySelector(".overlay");
+
+const pinForm =
+    document.querySelector("#pinForm") ||
+    document.querySelector("#authForm");
+
+const pinInput =
+    document.querySelector("#pinInput");
+
+const pinMsg =
+    document.querySelector("#pinMsg") ||
+    document.querySelector("#authMsg");
+
+const pinFooter =
+    document.querySelector("#pinFooter") ||
+    document.querySelector("#authFooterText");
+
 
 const themeBtn = $("#themeBtn");
 const themeLbl = $("#themeLbl");
@@ -191,14 +207,32 @@ function startConfigWatch(){
 }
 
 /* Auth */
-function showPin(msg=""){
+function showPin(msg = ""){
+  if (!authOverlay){
+    console.error("PIN overlay not found in DOM. Check #authOverlay in index.html");
+    return;
+  }
+
+  // support both patterns: [hidden] or .hidden
+  authOverlay.hidden = false;
   authOverlay.classList.remove("hidden");
-  pinMsg.textContent = msg;
+
+  if (pinMsg) pinMsg.textContent = msg;
 }
+
 function hidePin(){
+  if (!authOverlay) return;
+
+  authOverlay.hidden = true;
   authOverlay.classList.add("hidden");
+
+  if (pinMsg) pinMsg.textContent = "";
 }
-function setPinFooter(t){ if (pinFooter) pinFooter.textContent = t; }
+
+function setPinFooter(t){
+  if (pinFooter) pinFooter.textContent = t;
+}
+
 
 function setMeByKey(key){
   const p = PEOPLE.find(x=>x.key===key);
