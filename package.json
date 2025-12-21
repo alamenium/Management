@@ -1,8 +1,7 @@
 {
-  "name": "teamhub-firebase-netlify",
-  "private": true,
+  "name": "siliconhall-teamhub",
   "version": "1.0.0",
-  "description": "Team Hub (Firebase Firestore) + Netlify email function",
+  "private": true,
   "dependencies": {
     "nodemailer": "^6.9.13"
   }
