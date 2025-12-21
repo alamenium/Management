@@ -601,3 +601,70 @@ tr.taskRow--mine td{
   gap:8px;
   margin-top:8px;
 }
+/* --- Prettier multi-select (Assign to) --- */
+select[multiple]{
+  width: 100%;
+  min-height: 220px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(12, 18, 28, .55);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+  color: rgba(255,255,255,.92);
+  outline: none;
+
+  /* reduce “ugly native” look */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+
+  /* smoother scrolling */
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.18) rgba(255,255,255,.06);
+}
+
+select[multiple]:focus{
+  border-color: rgba(86, 215, 204, .55);
+  box-shadow: 0 0 0 4px rgba(86, 215, 204, .14);
+}
+
+select[multiple] option{
+  padding: 12px 12px;
+  margin: 6px 4px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.04);
+  color: rgba(255,255,255,.92);
+}
+
+select[multiple] option:hover{
+  background: rgba(86, 215, 204, .12);
+}
+
+/* selected items */
+select[multiple] option:checked{
+  background: linear-gradient(135deg, rgba(86,215,204,.30), rgba(86,215,204,.14));
+  color: #fff;
+  border: 1px solid rgba(86,215,204,.35);
+}
+
+/* remove the harsh OS highlight color where supported */
+select[multiple]{
+  accent-color: rgba(86,215,204,.85);
+}
+
+/* nicer scrollbar on webkit */
+select[multiple]::-webkit-scrollbar{
+  width: 10px;
+}
+select[multiple]::-webkit-scrollbar-track{
+  background: rgba(255,255,255,.06);
+  border-radius: 999px;
+}
+select[multiple]::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,.18);
+  border-radius: 999px;
+}
+select[multiple]::-webkit-scrollbar-thumb:hover{
+  background: rgba(255,255,255,.26);
+}
