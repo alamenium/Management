@@ -1,4 +1,8 @@
 /* Team Hub — Modern UI (responsive, dark/light) */
+/* make the HTML `hidden` attribute actually hide elements */
+[hidden]{
+  display: none !important;
+}
 
 :root{
   --bg0: #070a13;
