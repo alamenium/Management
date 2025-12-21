@@ -194,6 +194,8 @@
   // Who picker
   // ---------------------------
   function renderWhoList() {
+    if (!whoList) return;
+    if (!Array.isArray(MEMBERS) || MEMBERS.length === 0) return;
     whoList.innerHTML = MEMBERS.map((m) => {
       return `
         <button class="btn btn--ghost whoBtn" type="button" data-who="${escapeHtml(m.id)}">
