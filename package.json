@@ -1,10 +1,9 @@
 {
-  "name": "teamhub-netlify",
+  "name": "teamhub-firebase-netlify",
   "private": true,
   "version": "1.0.0",
-  "description": "Team Hub (static + Netlify functions)",
+  "description": "Team Hub (Firebase Firestore) + Netlify email function",
   "dependencies": {
-    "@netlify/blobs": "^7.3.0",
     "nodemailer": "^6.9.13"
   }
 }

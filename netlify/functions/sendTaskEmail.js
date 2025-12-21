@@ -1,154 +1,111 @@
 // netlify/functions/sendTaskEmail.js
-// Sends email notifications on new task creation.
-// Auth: requires the same Bearer token issued by api.js (HMAC signed).
+// Sends task assignment emails via Gmail SMTP.
 //
-// ENV required:
-//   AUTH_SECRET
-//   GMAIL_USER
-//   GMAIL_APP_PASSWORD
-//
-// NOTE: Do NOT hardcode credentials in this file.
+// IMPORTANT:
+// - Do NOT hardcode passwords in code.
+// - Set env vars in Netlify:
+//     GMAIL_USER         (siliconhall.management@gmail.com)
+//     GMAIL_APP_PASSWORD (Gmail App Password)
+// - This function only emails the hardcoded allowlist below.
 
-const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 
-/**
- * Allowed recipients (hardcoded to your team)
- */
-const MEMBERS = [
-  { id: "Youssef Elkhayat", team: "CAD Team", email: "youssifayman2004@gmail.com" },
-  { id: "Youssef Roshdy", team: "Prototype Team", email: "yousufdiaa2004@gmail.com" },
-  { id: "Mohamed AlAiniah", team: "CAD Team", email: "Mohammad.bashar033@gmail.com" },
-  { id: "Ahmed Saeed", team: "Prototype Team", email: "saeedahmedsuper@gmail.com" },
-  { id: "Mohamed ElMansy", team: "CAD Team", email: "mohammadadham20@gmail.com" },
-];
-
-const TEAM_MEMBERS = {
-  "CAD Team": MEMBERS.filter(m => m.team === "CAD Team").map(m => m.id),
-  "Prototype Team": MEMBERS.filter(m => m.team === "Prototype Team").map(m => m.id),
+const MEMBERS = {
+  youssef_elkhayat: { name: "Youssef Elkhayat", email: "youssifayman2004@gmail.com" },
+  youssef_roshdy: { name: "Youssef Roshdy", email: "yousufdiaa2004@gmail.com" },
+  mohamed_alainiah: { name: "Mohamed AlAiniah", email: "Mohammad.bashar033@gmail.com" },
+  ahmed_saeed: { name: "Ahmed Saeed", email: "saeedahmedsuper@gmail.com" },
+  mohamed_elmansy: { name: "Mohamed ElMansy", email: "mohammadadham20@gmail.com" },
 };
 
-const MEMBER_BY_ID = Object.fromEntries(MEMBERS.map(m => [m.id, m]));
-const ALL_IDS = MEMBERS.map(m => m.id);
+// The frontend uses these IDs:
+const FRONT_ID_TO_ALLOW = {
+  youssef_elkhayat: MEMBERS.youssef_elkhayat,
+  youssef_roshdy: MEMBERS.youssef_roshdy,
+  mohamed_alainiah: MEMBERS.mohamed_alainiah,
+  ahmed_saeed: MEMBERS.ahmed_saeed,
+  mohamed_elmansy: MEMBERS.mohamed_elmansy,
+};
 
-const json = (status, body) => ({
-  statusCode: status,
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body),
-});
-
-function b64url(buf){
-  return Buffer.from(buf).toString("base64").replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
-}
-
-function verifyToken(token, secret){
-  if(!token || typeof token !== "string") return null;
-  const parts = token.split(".");
-  if(parts.length !== 3) return null;
-  const [h,p,s] = parts;
-  const msg = `${h}.${p}`;
-  const expected = b64url(crypto.createHmac("sha256", secret).update(msg).digest());
-  if(expected.length !== s.length) return null;
-  const ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(s));
-  if(!ok) return null;
-
-  let payload;
-  try{
-    payload = JSON.parse(Buffer.from(p.replace(/-/g,"+").replace(/_/g,"/"), "base64").toString("utf8"));
-  }catch{ return null; }
-
-  if(payload.exp && Date.now() > payload.exp) return null;
-  return payload;
-}
-
-function getBearer(event){
-  const h = event.headers || {};
-  const auth = h.authorization || h.Authorization || "";
-  const m = String(auth).match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : "";
-}
-
-function normalizeTargets(arr){
-  const raw = Array.isArray(arr) ? arr.filter(Boolean).map(String) : [];
-  const set = new Set();
-  for (const t of raw) set.add(t);
-  if (set.has("All")) return ["All"];
-  return [...set];
-}
-
-function expandTargets(targets){
-  const t = normalizeTargets(targets);
-  const out = new Set();
-  for (const x of t){
-    if (x === "All"){
-      ALL_IDS.forEach(id => out.add(id));
-    } else if (TEAM_MEMBERS[x]){
-      TEAM_MEMBERS[x].forEach(id => out.add(id));
-    } else if (MEMBER_BY_ID[x]){
-      out.add(x);
-    }
-  }
-  return [...out];
+function json(statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Content-Type",
+    },
+    body: JSON.stringify(body),
+  };
 }
 
 exports.handler = async (event) => {
-  try{
-    const AUTH_SECRET = process.env.AUTH_SECRET || "";
-    const GMAIL_USER = process.env.GMAIL_USER || "";
-    const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || "";
+  if (event.httpMethod === "OPTIONS") return json(200, { ok: true });
+  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
-    if(!AUTH_SECRET) return json(500, { error: "Missing AUTH_SECRET" });
-    if(!GMAIL_USER || !GMAIL_APP_PASSWORD) return json(500, { error: "Missing Gmail env vars" });
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
 
-    const token = getBearer(event);
-    const payload = verifyToken(token, AUTH_SECRET);
-    if(!payload) return json(401, { error: "Unauthorized" });
+  if (!user || !pass) {
+    return json(500, { ok: false, error: "Missing GMAIL_USER or GMAIL_APP_PASSWORD env vars" });
+  }
 
-    const body = event.body ? JSON.parse(event.body) : {};
-    const task = body.task || {};
+  let payload;
+  try {
+    payload = JSON.parse(event.body || "{}");
+  } catch {
+    return json(400, { ok: false, error: "Invalid JSON" });
+  }
 
-    const desc = String(task.desc || "Task");
-    const targets = normalizeTargets(task.targets || []);
-    const due = String(task.due || "—");
-    const priority = String(task.priority || "med");
-    const notes = String(task.notes || "—");
-    const createdBy = String(task.createdBy || "Unknown");
+  const taskId = String(payload.taskId || "");
+  const desc = String(payload.desc || "");
+  const notes = String(payload.notes || "");
+  const due = String(payload.due || "");
+  const priority = String(payload.priority || "");
+  const involved = Array.isArray(payload.involved) ? payload.involved.map(String) : [];
 
-    const involvedIds = expandTargets(targets);
-    const recipients = involvedIds
-      .map(id => MEMBER_BY_ID[id]?.email)
-      .filter(Boolean);
+  // Map involved IDs to allowlisted emails
+  const recipients = [];
+  for (const id of involved) {
+    const m = FRONT_ID_TO_ALLOW[id];
+    if (m?.email) recipients.push(m.email);
+  }
+  const unique = [...new Set(recipients)];
 
-    if(!recipients.length) return json(200, { ok:true, skipped:true });
+  if (!unique.length) return json(200, { ok: true, skipped: true, reason: "No allowlisted recipients" });
 
-    const subject = `[Team Hub] New task: ${desc.slice(0, 80)}`;
-    const text =
-`New Task Created
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+  });
 
-Description: ${desc}
-Assigned To: ${targets.join(", ")}  (expanded: ${involvedIds.join(", ")})
-Priority: ${priority}
-Due: ${due}
-Notes: ${notes}
+  const prettyDue = due ? due : "—";
+  const prettyNotes = notes ? notes : "—";
+  const prettyPriority = priority ? priority.toUpperCase() : "—";
 
-Created by: ${createdBy}
-`;
+  const subject = `New Task Assigned: ${desc || "Task"}`;
+  const text = [
+    "A new task was created in Team Hub.",
+    "",
+    `Task: ${desc || "—"}`,
+    `Due: ${prettyDue}`,
+    `Priority: ${prettyPriority}`,
+    `Notes: ${prettyNotes}`,
+    taskId ? `Task ID: ${taskId}` : "",
+    "",
+    "—",
+    "Silicon Hall Management",
+  ].filter(Boolean).join("\n");
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }
-    });
-
+  try {
     await transporter.sendMail({
-      from: `"${GMAIL_USER}" <${GMAIL_USER}>`,
-      to: GMAIL_USER,
-      bcc: recipients,
+      from: `Silicon Hall Management <${user}>`,
+      to: unique.join(", "),
       subject,
       text,
     });
-
-    return json(200, { ok:true, sent: recipients.length });
-  }catch(err){
-    return json(500, { error: err.message || "Server error" });
+    return json(200, { ok: true, sentTo: unique });
+  } catch (e) {
+    return json(500, { ok: false, error: "Email send failed", details: String(e?.message || e) });
   }
 };

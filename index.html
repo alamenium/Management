@@ -6,12 +6,13 @@
   <meta name="color-scheme" content="dark light" />
   <title>Team Hub</title>
   <link rel="icon" href="./assets/logo.png" />
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <div class="bg" aria-hidden="true"></div>
 
-  <!-- PIN Auth -->
+  <!-- PIN gate -->
   <div id="authOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="authTitle">
     <div class="overlay__card">
       <div class="overlay__brand">
@@ -19,7 +20,7 @@
         <div class="overlay__text">
           <div class="overlay__kicker">TEAM HUB</div>
           <h1 id="authTitle" class="overlay__title">Enter PIN</h1>
-          <p class="overlay__sub">Your session is cached on this device. If the PIN changes, you’ll be asked again.</p>
+          <p class="overlay__sub">This PIN is cached on your device. If it changes, you’ll be asked again.</p>
         </div>
       </div>
 
@@ -42,69 +43,28 @@
     </div>
   </div>
 
-  <!-- Who are you -->
-  <div id="whoOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="whoTitle" hidden>
+  <!-- Who prompt -->
+  <div id="whoOverlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="whoTitle">
     <div class="overlay__card">
       <div class="overlay__brand">
         <img class="overlay__logo" src="./assets/logo.png" alt="Logo" />
         <div class="overlay__text">
-          <div class="overlay__kicker">WHO ARE YOU?</div>
-          <h2 id="whoTitle" class="overlay__title">Pick your name</h2>
-          <p class="overlay__sub">This is used for highlighting tasks and your personal “done” checkbox.</p>
+          <div class="overlay__kicker">ONE LAST THING</div>
+          <h1 id="whoTitle" class="overlay__title">Who are you?</h1>
+          <p class="overlay__sub">This is used for task highlighting and “my done” checkmarks. You can change it later.</p>
         </div>
       </div>
 
-      <div id="whoList" class="whoList" aria-live="polite">
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Youssef Elkhayat">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Youssef Elkhayat</span>
-            <span class="whoBtn__team">CAD Team</span>
-          </span>
-          <span class="whoBtn__tag">CAD Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Youssef Roshdy">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Youssef Roshdy</span>
-            <span class="whoBtn__team">Prototype Team</span>
-          </span>
-          <span class="whoBtn__tag">Prototype Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Mohamed AlAiniah">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Mohamed AlAiniah</span>
-            <span class="whoBtn__team">CAD Team</span>
-          </span>
-          <span class="whoBtn__tag">CAD Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Ahmed Saeed">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Ahmed Saeed</span>
-            <span class="whoBtn__team">Prototype Team</span>
-          </span>
-          <span class="whoBtn__tag">Prototype Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Mohamed ElMansy">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Mohamed ElMansy</span>
-            <span class="whoBtn__team">CAD Team</span>
-          </span>
-          <span class="whoBtn__tag">CAD Team</span>
-        </button>
-
-</div>
+      <div id="whoList" class="whoList" aria-live="polite"></div>
 
       <div class="tiny">
         <span class="dot"></span>
-        <span id="whoHint">You can switch later from the header.</span>
+        <span class="muted2">Tip: pick your name once. It’s cached on this device.</span>
       </div>
     </div>
   </div>
 
+  <!-- App -->
   <header class="topbar">
     <div class="topbar__inner">
       <div class="brand">
@@ -116,15 +76,16 @@
       </div>
 
       <div class="topbar__actions">
+        <div class="userPill" id="userPill" title="Click to switch user">
+          <span class="dot"></span>
+          <span id="userName">—</span>
+          <span class="muted2" id="userTeam">—</span>
+        </div>
+
         <div class="search">
           <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="2"/><path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input id="globalSearch" class="search__input" placeholder="Search links, tasks, notes…" />
         </div>
-
-        <button id="whoBtn" class="btn btn--pill" type="button" title="Switch user">
-          <span class="btn__dot"></span>
-          <span id="whoLabel">—</span>
-        </button>
 
         <button id="themeToggle" class="btn btn--pill" type="button" title="Toggle theme">
           <span class="btn__dot"></span>
@@ -148,14 +109,23 @@
           <p class="hero__sub">Quick links, task tracking, and shared notes—synced for the whole team.</p>
         </div>
         <div class="hero__stats">
-          <div class="stat"><div class="stat__num" id="statLinks">—</div><div class="stat__lbl">Links</div></div>
-          <div class="stat"><div class="stat__num" id="statTasks">—</div><div class="stat__lbl">Tasks</div></div>
-          <div class="stat"><div class="stat__num" id="statOpen">—</div><div class="stat__lbl">Open</div></div>
+          <div class="stat">
+            <div class="stat__num" id="statLinks">—</div>
+            <div class="stat__lbl">Links</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num" id="statTasks">—</div>
+            <div class="stat__lbl">Tasks</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num" id="statOpen">—</div>
+            <div class="stat__lbl">Open</div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Links -->
+    <!-- Quick links -->
     <section class="card">
       <div class="sectionHead">
         <div>
@@ -173,33 +143,21 @@
       <div class="sectionHead">
         <div>
           <div class="kicker"><span class="dot"></span> Tasks</div>
-          <h3 class="h3">Track work</h3>
-          <p class="muted">Tasks highlight if you’re involved. Each member has their own “done” checkbox.</p>
+          <h3 class="h3">Per-person checkoff</h3>
+          <p class="muted">Each person checks for themselves. A task becomes fully done when everyone involved is done.</p>
         </div>
         <button id="newTaskBtn" class="btn btn--primary" type="button">+ New task</button>
       </div>
 
       <div class="taskTools">
         <div class="pill"><span id="taskCount">0</span>&nbsp;tasks</div>
-
-        <select id="filterStatus" class="select">
-          <option value="all">All</option>
-          <option value="open">Open</option>
-          <option value="done">Fully done</option>
-          <option value="mine">My tasks</option>
+        <select id="filterMine" class="select">
+          <option value="all">Show: All tasks</option>
+          <option value="mine">Show: Only tasks I’m involved in</option>
         </select>
-
-        <select id="filterPriority" class="select">
-          <option value="all">All priorities</option>
-          <option value="low">Low</option>
-          <option value="med">Medium</option>
-          <option value="high">High</option>
-        </select>
-
         <select id="sortTasks" class="select select--right">
           <option value="updatedDesc">Sort: recently updated</option>
           <option value="dueAsc">Sort: due date</option>
-          <option value="priorityDesc">Sort: priority</option>
           <option value="createdDesc">Sort: newest</option>
         </select>
       </div>
@@ -208,12 +166,12 @@
         <table class="table">
           <thead>
             <tr>
+              <th>My done</th>
               <th>Description</th>
               <th>Assigned to</th>
-              <th>Priority</th>
               <th>Due</th>
-              <th>Status / My done</th>
               <th>Notes</th>
+              <th>Progress</th>
               <th class="th--right">Actions</th>
             </tr>
           </thead>
@@ -224,7 +182,7 @@
       <div id="tasksEmpty" class="empty" hidden>No tasks match your filters.</div>
     </section>
 
-    <!-- Notes -->
+    <!-- Shared Notes -->
     <section class="card">
       <div class="sectionHead">
         <div>
@@ -232,13 +190,19 @@
           <h3 class="h3">Team scratchpad</h3>
           <p class="muted">Everyone sees the same notes. Autosaves.</p>
         </div>
-        <div class="rightMeta"><span id="notesStatus" class="hint">—</span></div>
+        <div class="rightMeta">
+          <span id="notesStatus" class="hint">—</span>
+        </div>
       </div>
+
       <textarea id="notesBox" class="notes" rows="10" placeholder="Write notes here…"></textarea>
     </section>
 
     <footer class="footer">
-      <div class="footer__left"><span class="dot"></span><span>Team Hub</span></div>
+      <div class="footer__left">
+        <span class="dot"></span>
+        <span>Team Hub</span>
+      </div>
       <div class="footer__right">
         <button id="exportBtn" class="btn btn--ghost" type="button">Export JSON</button>
         <label class="btn btn--ghost" for="importFile">Import JSON</label>
@@ -247,7 +211,7 @@
     </footer>
   </main>
 
-  <!-- Link dialog -->
+  <!-- Link modal -->
   <dialog id="linkDialog" class="dialog">
     <form id="linkForm" method="dialog" class="dialog__card">
       <div class="dialog__head">
@@ -274,13 +238,12 @@
 
       <div class="dialog__actions">
         <button id="linkSaveBtn" class="btn btn--primary" value="ok">Save</button>
-        <button type="button" id="taskCancelBtn" class="btn btn--ghost">Cancel</button>
-
+        <button class="btn btn--ghost" value="cancel">Cancel</button>
       </div>
     </form>
   </dialog>
 
-  <!-- Task dialog -->
+  <!-- Task modal -->
   <dialog id="taskDialog" class="dialog">
     <form id="taskForm" method="dialog" class="dialog__card">
       <div class="dialog__head">
@@ -296,22 +259,9 @@
       </label>
 
       <label class="field">
-        <span class="field__label">Assign to (multi-select)</span>
-        <select id="taskAssignees" class="select select--multi" multiple size="8">
-          <optgroup label="People">
-            <option value="Youssef Elkhayat">Youssef Elkhayat</option>
-            <option value="Youssef Roshdy">Youssef Roshdy</option>
-            <option value="Mohamed AlAiniah">Mohamed AlAiniah</option>
-            <option value="Ahmed Saeed">Ahmed Saeed</option>
-            <option value="Mohamed ElMansy">Mohamed ElMansy</option>
-          </optgroup>
-          <optgroup label="Teams">
-            <option value="CAD Team">CAD Team</option>
-            <option value="Prototype Team">Prototype Team</option>
-            <option value="All">All</option>
-          </optgroup>
-        </select>
-        <div class="hint">Tip: you can select multiple names + teams together.</div>
+        <span class="field__label">Assign to (pick multiple)</span>
+        <div id="assignPicker" class="assignPicker"></div>
+        <p class="hint">Tip: you can pick people + teams together. Duplicates are merged automatically.</p>
       </label>
 
       <div class="grid2">
@@ -336,12 +286,31 @@
       </label>
 
       <div class="dialog__actions">
-        <button id="taskSaveBtn" class="btn btn--primary" value="ok">Create</button>
+        <button id="taskCreateBtn" class="btn btn--primary" value="ok">Create</button>
         <button class="btn btn--ghost" value="cancel">Cancel</button>
       </div>
     </form>
   </dialog>
 
-  <script src="./script.js"></script>
+  <!-- Assign edit modal -->
+  <dialog id="assignDialog" class="dialog">
+    <form id="assignForm" method="dialog" class="dialog__card">
+      <div class="dialog__head">
+        <h3 class="dialog__title">Edit assignment</h3>
+        <button class="iconBtn" value="cancel" aria-label="Close">
+          <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div id="assignEditPicker" class="assignPicker"></div>
+
+      <div class="dialog__actions">
+        <button class="btn btn--primary" value="ok">Save</button>
+        <button class="btn btn--ghost" value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="./script.js"></script>
 </body>
 </html>
