@@ -53,7 +53,7 @@ const ASSIGN_OPTIONS = [
 const memberById = Object.fromEntries(MEMBERS.map(m=>[m.id,m]));
 
 /* Defaults */
-const DEFAULT_PIN = "1234"; // first run only; later edit meta/config.pinHash
+const DEFAULT_PIN = "0750"; // first run only; later edit meta/config.pinHash
 const LS_THEME = "teamhub_theme_v3";
 const LS_PINHASH = "teamhub_pin_hash_v3";
 const LS_WHO = "teamhub_who_v1";
