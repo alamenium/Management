@@ -104,7 +104,19 @@ body{margin:0;font-family:var(--font);color:var(--ink);overflow-x:hidden}
   color:var(--ink);padding:12px;outline:none;font-size:14.5px}
 :root[data-theme="light"] .input,:root[data-theme="light"] .select,:root[data-theme="light"] .notes{background:rgba(0,0,0,.03)}
 .input--search{min-width:260px}
-.notes{min-height:220px;resize:vertical;line-height:1.55}
+
+/* ---------- FIX: notes/description should grow instead of scrolling ----------
+   Uses modern `field-sizing: content` when available (Chrome/Edge/Safari TP).
+   Fallback: scrollbar remains visible (not hidden) if browser can't auto-grow. */
+.notes{
+  min-height:220px;
+  resize:vertical;
+  line-height:1.55;
+  field-sizing:content;
+  height:auto;
+  max-height:none;
+  overflow:auto;            /* visible scrollbar only if needed (fallback) */
+}
 .notes--mini{min-height:120px}
 
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -123,13 +135,40 @@ body{margin:0;font-family:var(--font);color:var(--ink);overflow-x:hidden}
 .cellInput{width:100%;padding:10px;border-radius:14px;border:1px solid rgba(255,255,255,0);background:transparent;color:var(--ink);outline:none}
 .cellInput:focus{border-color:rgba(16,184,215,.35);background:rgba(16,184,215,.10)}
 
-.cellArea{width:100%;padding:10px;border-radius:14px;border:1px solid rgba(255,255,255,0);background:transparent;color:var(--ink);outline:none;font-size:14.5px;line-height:1.45;resize:vertical;min-height:44px}
-.cellArea:focus{border-color:rgba(16,184,215,.35);background:rgba(16,184,215,.10)}
-.input--area{min-height:46px;resize:vertical;line-height:1.45}
+/* Textarea used for Description/Notes inside tasks table */
+.cellArea{
+  width:100%;
+  padding:10px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,0);
+  background:transparent;
+  color:var(--ink);
+  outline:none;
+  font-size:14.5px;
+  line-height:1.45;
 
-/* Auto-grow task textareas: expand with content; if they ever overflow, hide the scrollbar (still scrollable) */
-textarea.autoGrow{overflow:auto;max-height:none !important;resize:none;scrollbar-width:none}
-textarea.autoGrow::-webkit-scrollbar{display:none}
+  /* grow */
+  field-sizing:content;
+  height:auto;
+  min-height:44px;
+  max-height:none;
+
+  /* fallback behavior (keep scrollbar visible if needed) */
+  overflow:auto;
+
+  /* still allow manual resize if the browser doesn't auto-grow */
+  resize:vertical;
+}
+.cellArea:focus{border-color:rgba(16,184,215,.35);background:rgba(16,184,215,.10)}
+.input--area{
+  min-height:46px;
+  field-sizing:content;
+  height:auto;
+  max-height:none;
+  overflow:auto;    /* visible scrollbar only if needed (fallback) */
+  resize:vertical;
+  line-height:1.45;
+}
 
 .assignChips{display:flex;flex-wrap:wrap;gap:8px}
 .badge{font-size:12px;font-weight:900;padding:7px 10px;border-radius:999px;border:1px solid var(--stroke);background:rgba(255,255,255,.04);display:inline-flex;align-items:center;gap:8px}
