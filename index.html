@@ -114,7 +114,8 @@
         </div>
       </div>
 
-      <div class="tableWrap">
+      <div id="tasksList" class="tasksList">
+      <div id="tasksTableWrap" class="tableWrap">
         <table class="table">
           <thead>
             <tr>
@@ -130,6 +131,8 @@
           <tbody id="tasksBody"></tbody>
         </table>
       </div>
+      <div id="tasksCards" class="tasksCards" aria-label="Tasks"></div>
+    </div>
       <div id="tasksEmpty" class="empty" hidden>No tasks found.</div>
     </section>
 
@@ -246,6 +249,25 @@
       </div>
     </form>
   </dialog>
+
+
+  <!-- Confirm / Alert Modal -->
+  <dialog id="modalDialog" class="dialog">
+    <form id="modalForm" method="dialog" class="dialog__card">
+      <div class="dialog__head">
+        <h3 id="modalTitle" class="dialog__title">Confirm</h3>
+        <button class="iconBtn" value="cancel" aria-label="Close">
+          <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <p id="modalMsg" class="modalMsg"></p>
+      <div class="dialog__actions">
+        <button id="modalCancel" class="btn btn--ghost" value="cancel">Cancel</button>
+        <button id="modalOk" class="btn btn--primary" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
 
   <script type="module" src="./script.js"></script>
 </body>

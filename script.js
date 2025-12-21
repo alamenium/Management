@@ -69,6 +69,70 @@ async function sha256Hex(text){
 }
 window.teamhubSha256 = sha256Hex;
 
+/* Custom popups (mobile-friendly) */
+function uiConfirm({ title="Confirm", message="", okText="OK", cancelText="Cancel", danger=false } = {}){
+  // Fallback to native if dialog missing
+  if (!modalDialog || typeof modalDialog.showModal !== "function"){
+    // eslint-disable-next-line no-alert
+    return Promise.resolve(confirm(message || title));
+  }
+  modalTitle.textContent = title;
+  modalMsg.textContent = message;
+
+  modalCancel.hidden = false;
+  modalCancel.textContent = cancelText;
+
+  modalOk.textContent = okText;
+  modalOk.classList.toggle("btn--danger", !!danger);
+  modalOk.classList.toggle("btn--primary", !danger);
+
+  return new Promise((resolve)=>{
+    const onClose = ()=>{
+      modalDialog.removeEventListener("close", onClose);
+      resolve(modalDialog.returnValue === "ok");
+    };
+    modalDialog.addEventListener("close", onClose, { once: false });
+    modalDialog.showModal();
+  });
+}
+function uiAlert({ title="Notice", message="", okText="OK" } = {}){
+  if (!modalDialog || typeof modalDialog.showModal !== "function"){
+    // eslint-disable-next-line no-alert
+    alert(message || title);
+    return Promise.resolve();
+  }
+  modalTitle.textContent = title;
+  modalMsg.textContent = message;
+
+  modalCancel.hidden = true;
+  modalOk.textContent = okText;
+  modalOk.classList.remove("btn--danger");
+  modalOk.classList.add("btn--primary");
+
+  return new Promise((resolve)=>{
+    const onClose = ()=>{
+      modalDialog.removeEventListener("close", onClose);
+      resolve();
+    };
+    modalDialog.addEventListener("close", onClose, { once: false });
+    modalDialog.showModal();
+  });
+}
+
+/* Auto-grow textareas */
+function autoGrow(el){
+  if (!el) return;
+  el.style.height = "auto";
+  const h = Math.min(el.scrollHeight || 0, 260);
+  if (h) el.style.height = h + "px";
+}
+function kickAutoGrow(rootEl=document){
+  requestAnimationFrame(()=>{
+    rootEl.querySelectorAll?.(".autoGrow")?.forEach?.(autoGrow);
+  });
+}
+
+
 /* UI refs */
 const pinOverlay = $("#pinOverlay");
 const pinForm = $("#pinForm");
@@ -120,6 +184,15 @@ const notesStatus = $("#notesStatus");
 
 const exportBtn = $("#exportBtn");
 const importFile = $("#importFile");
+
+const tasksList = $("#tasksList");
+const tasksCards = $("#tasksCards");
+
+const modalDialog = $("#modalDialog");
+const modalTitle = $("#modalTitle");
+const modalMsg = $("#modalMsg");
+const modalOk = $("#modalOk");
+const modalCancel = $("#modalCancel");
 
 /* State */
 let remotePinHash = null;
@@ -463,6 +536,7 @@ function assignedBadges(t){
   }).join("");
 }
 
+
 function renderTasks(){
   const q = (searchQ || "").trim().toLowerCase();
   let list = [...tasks];
@@ -476,6 +550,7 @@ function renderTasks(){
 
   tasksEmpty.hidden = list.length !== 0;
 
+  // Desktop table
   tasksBody.innerHTML = list.map(t=>{
     const mine = isTaskMine(t);
     const fully = isFullyDone(t);
@@ -491,7 +566,7 @@ function renderTasks(){
       const checked = d[me.key] === true ? "checked" : "";
       myCell = `
         <label class="myCheck">
-          <input type="checkbox" class="myDone" data-id="${t.id}" ${checked} />
+          <input type="checkbox" class="myDone" data-task-id="${t.id}" ${checked} />
           <span class="muted2">My done</span>
         </label>
       `;
@@ -502,27 +577,100 @@ function renderTasks(){
         : `<span class="badge badge--todo">In progress</span>`;
 
     return `
-      <tr data-id="${t.id}" class="${rowCls}">
+      <tr data-task-id="${t.id}" class="${rowCls}">
         <td class="checkCell">${myCell}</td>
-        <td><input class="cellInput taskEdit" data-field="desc" value="${desc}" placeholder="Task…" /></td>
+        <td>
+          <textarea class="cellArea autoGrow taskEdit" data-field="desc" data-task-id="${t.id}" rows="2" placeholder="Task…">${desc}</textarea>
+        </td>
         <td><div class="assignChips">${assignedBadges(t)}</div></td>
         <td>
           <div class="progress">${progressChips(t)}</div>
           <div style="margin-top:8px">${doneBadge}</div>
         </td>
-        <td><input class="cellInput taskEdit" data-field="due" type="date" value="${due}" /></td>
-        <td><input class="cellInput taskEdit" data-field="notes" value="${notes}" placeholder="Notes…" /></td>
+        <td>
+          <input class="cellInput taskEdit" data-field="due" data-task-id="${t.id}" type="date" value="${due}" />
+        </td>
+        <td>
+          <textarea class="cellArea autoGrow taskEdit" data-field="notes" data-task-id="${t.id}" rows="2" placeholder="Notes…">${notes}</textarea>
+        </td>
         <td class="th--right">
           <div class="actionsRight">
-            <button class="smallBtn danger" data-act="del">Delete</button>
+            <button class="smallBtn danger" data-act="del" data-task-id="${t.id}">Delete</button>
           </div>
         </td>
       </tr>
     `;
   }).join("");
+
+  // Mobile cards
+  if (tasksCards){
+    tasksCards.innerHTML = list.map(t=>{
+      const mine = isTaskMine(t);
+      const fully = isFullyDone(t);
+      const due = escapeHtml(t.due || "");
+      const desc = escapeHtml(t.desc || "");
+      const notes = escapeHtml(t.notes || "");
+
+      let myTop = `<div class="muted2">Not involved</div>`;
+      if (mine){
+        const d = doneMap(t);
+        const checked = d[me.key] === true ? "checked" : "";
+        myTop = `
+          <label class="myCheck">
+            <input type="checkbox" class="myDone" data-task-id="${t.id}" ${checked} />
+            <span class="muted2">My done</span>
+          </label>
+        `;
+      }
+
+      const doneBadge = fully
+        ? `<span class="badge badge--done">Fully done</span>`
+        : `<span class="badge badge--todo">In progress</span>`;
+
+      const cardCls = `taskCard ${mine ? "taskCard--mine":""} ${fully ? "taskCard--done":""}`;
+
+      return `
+        <div class="${cardCls}" data-task-id="${t.id}">
+          <div class="taskCard__head">
+            ${myTop}
+            <button class="smallBtn danger" data-act="del" data-task-id="${t.id}">Delete</button>
+          </div>
+
+          <label class="field">
+            <span class="field__label">Description</span>
+            <textarea class="input input--area autoGrow taskEdit" data-field="desc" data-task-id="${t.id}" rows="2" placeholder="Task…">${desc}</textarea>
+          </label>
+
+          <div class="taskCard__meta">
+            <div class="assignChips">${assignedBadges(t)}</div>
+          </div>
+
+          <div>
+            <div class="progress">${progressChips(t)}</div>
+            <div style="margin-top:8px">${doneBadge}</div>
+          </div>
+
+          <div class="taskCard__grid">
+            <label class="field">
+              <span class="field__label">Due</span>
+              <input class="input taskEdit" data-field="due" data-task-id="${t.id}" type="date" value="${due}" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field__label">Notes</span>
+            <textarea class="input input--area autoGrow taskEdit" data-field="notes" data-task-id="${t.id}" rows="3" placeholder="Notes…">${notes}</textarea>
+          </label>
+        </div>
+      `;
+    }).join("");
+  }
+
+  kickAutoGrow(tasksList || document);
 }
 
 function renderStats(){
+
   statTasks.textContent = String(tasks.length);
   const mine = me ? tasks.filter(isTaskMine).length : 0;
   statMine.textContent = String(mine);
@@ -550,62 +698,70 @@ function scheduleTaskPatch(id, patch){
   }, 350);
 }
 
-tasksBody.addEventListener("input", (e)=>{
-  const inp = e.target.closest(".taskEdit");
-  if (!inp) return;
-  const row = e.target.closest("tr[data-id]");
-  if (!row) return;
-  const id = row.dataset.id;
-  const field = inp.dataset.field;
-  if (!field) return;
-  scheduleTaskPatch(id, { [field]: inp.value });
-});
 
-/* My done checkbox (ONLY your own) */
-tasksBody.addEventListener("change", async (e)=>{
-  const cb = e.target.closest(".myDone");
-  if (!cb) return;
-  const id = cb.dataset.id;
-  if (!me) return;
+if (tasksList){
+  tasksList.addEventListener("input", (e)=>{
+    const inp = e.target.closest(".taskEdit");
+    if (!inp) return;
+    const id = inp.dataset.taskId || inp.closest("[data-task-id]")?.dataset?.taskId;
+    const field = inp.dataset.field;
+    if (!id || !field) return;
+    scheduleTaskPatch(id, { [field]: inp.value });
+    if (inp.classList.contains("autoGrow")) autoGrow(inp);
+  });
 
-  // Confirm you’re actually involved (defensive)
-  const t = tasks.find(x=>x.id===id);
-  if (!t || !isTaskMine(t)){
-    cb.checked = false;
-    return;
-  }
+  /* My done checkbox (ONLY your own) */
+  tasksList.addEventListener("change", async (e)=>{
+    const cb = e.target.closest(".myDone");
+    if (!cb) return;
+    const id = cb.dataset.taskId || cb.closest("[data-task-id]")?.dataset?.taskId;
+    if (!id || !me) return;
 
-  const checked = cb.checked === true;
-  try{
-    const key = me.key; // safe (no dots)
-    const fieldPath = `doneBy.${key}`;
-    await updateDoc(doc(db,"tasks", id), {
-      [fieldPath]: checked,
-      updatedAt: serverTimestamp()
+    // Confirm you’re actually involved (defensive)
+    const t = tasks.find(x=>x.id===id);
+    if (!t || !isTaskMine(t)){
+      cb.checked = false;
+      return;
+    }
+
+    const checked = cb.checked === true;
+    try{
+      const key = me.key; // safe (no dots)
+      const fieldPath = `doneBy.${key}`;
+      await updateDoc(doc(db,"tasks", id), {
+        [fieldPath]: checked,
+        updatedAt: serverTimestamp()
+      });
+    }catch(err){
+      console.error(err);
+      cb.checked = !checked;
+    }
+  });
+
+  /* Delete (available for everyone) */
+  tasksList.addEventListener("click", async (e)=>{
+    const btn = e.target.closest("[data-act='del']");
+    if (!btn) return;
+    const id = btn.dataset.taskId || btn.closest("[data-task-id]")?.dataset?.taskId;
+    if (!id) return;
+
+    const ok = await uiConfirm({
+      title: "Delete task?",
+      message: "This will remove it for everyone. You can’t undo this.",
+      okText: "Delete",
+      cancelText: "Cancel",
+      danger: true
     });
-  }catch(err){
-    console.error(err);
-    cb.checked = !checked;
-  }
-});
+    if (!ok) return;
 
-/* Delete (available for everyone) */
-tasksBody.addEventListener("click", async (e)=>{
-  const btn = e.target.closest("[data-act='del']");
-  if (!btn) return;
-  const row = e.target.closest("tr[data-id]");
-  if (!row) return;
-  const id = row.dataset.id;
-
-  if (!confirm("Delete this task?")) return;
-
-  try{
-    await deleteDoc(doc(db,"tasks", id));
-  }catch(err){
-    console.error(err);
-    alert("Delete failed. Check Firestore rules.");
-  }
-});
+    try{
+      await deleteDoc(doc(db,"tasks", id));
+    }catch(err){
+      console.error(err);
+      await uiAlert({ title: "Delete failed", message: "Delete failed. Check Firestore rules." });
+    }
+  });
+}
 
 searchBox.addEventListener("input", ()=>{
   searchQ = searchBox.value || "";
@@ -633,7 +789,7 @@ taskDialog.addEventListener("close", async ()=>{
 
   const assignSet = new Set(selectedAssign);
   if (assignSet.size === 0){
-    alert("Pick at least one assignee (person/team/all).");
+    await uiAlert({ title: "Missing assignee", message: "Pick at least one assignee (person/team/all)." });
     return;
   }
 
@@ -667,7 +823,7 @@ taskDialog.addEventListener("close", async ()=>{
     });
   }catch(err){
     console.error(err);
-    alert("Task create failed. Check Firestore rules / Netlify function.");
+    await uiAlert({ title: "Task create failed", message: "Task create failed. Check Firestore rules / Netlify function." });
   }
 });
 
@@ -787,7 +943,8 @@ linksGrid.addEventListener("click", async (e)=>{
     linkDialog.showModal();
   }
   if (act === "del"){
-    if (!confirm("Delete this link?")) return;
+    const ok = await uiConfirm({ title: "Delete link?", message: "This will remove the link for everyone. You can’t undo this.", okText: "Delete", cancelText: "Cancel", danger: true });
+    if (!ok) return;
     try{ await deleteDoc(doc(db,"links", id)); }catch(err){ console.error(err); }
   }
 });
@@ -832,7 +989,8 @@ importFile.addEventListener("change", async ()=>{
   if (!f) return;
   try{
     const obj = JSON.parse(await f.text());
-    if (!confirm("Import will replace current tasks/links/notes. Continue?")) return;
+    const ok = await uiConfirm({ title: "Import data?", message: "This will replace current tasks, links, and notes.", okText: "Import", cancelText: "Cancel", danger: true });
+    if (!ok) return;
 
     const batch = writeBatch(db);
     for (const t of tasks) batch.delete(doc(db,"tasks", t.id));
@@ -869,7 +1027,7 @@ importFile.addEventListener("change", async ()=>{
     await batch.commit();
   }catch(err){
     console.error(err);
-    alert("Import failed. Bad JSON?");
+    await uiAlert({ title: "Import failed", message: "Import failed. Bad JSON?" });
   }finally{
     importFile.value = "";
   }
