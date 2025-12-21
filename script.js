@@ -11,7 +11,7 @@ import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.4.0/firebase
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc,
   collection, addDoc, deleteDoc, onSnapshot,
-  query, orderBy, serverTimestamp, writeBatch
+  query, orderBy, serverTimestamp, writeBatch, deleteField
 } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js";
 
 /* Firebase config (hardcoded) */
@@ -33,6 +33,72 @@ const db = getFirestore(app);
 const DEFAULT_PIN = "1234"; // first run only; change later by editing meta/config.pinHash
 const LS_THEME = "teamhub_theme_v2";
 const LS_PINHASH = "teamhub_pin_hash_v2";
+
+const LS_WHO = "teamhub_who_v1";
+
+// Hardcoded members (used for "Who are you?", task assignment, and emailing)
+const MEMBERS = [
+  { id:"youssef_elkhayat", name:"Youssef Elkhayat", team:"CAD Team", email:"youssifayman2004@gmail.com" },
+  { id:"youssef_roshdy", name:"Youssef Roshdy", team:"Prototype Team", email:"yousufdiaa2004@gmail.com" },
+  { id:"mohamed_alainiah", name:"Mohamed AlAiniah", team:"CAD Team", email:"Mohammad.bashar033@gmail.com" },
+  { id:"ahmed_saeed", name:"Ahmed Saeed", team:"Prototype Team", email:"saeedahmedsuper@gmail.com" },
+  { id:"mohamed_elmansy", name:"Mohamed ElMansy", team:"CAD Team", email:"mohammadadham20@gmail.com" },
+];
+const MEMBER_BY_ID = Object.fromEntries(MEMBERS.map(m => [m.id, m]));
+const CAD_IDS = MEMBERS.filter(m=>m.team==="CAD Team").map(m=>m.id);
+const PROTO_IDS = MEMBERS.filter(m=>m.team==="Prototype Team").map(m=>m.id);
+const ALL_IDS = MEMBERS.map(m=>m.id);
+
+function resolveAssignment(key){
+  // key examples: "user:youssef_elkhayat" | "team:cad" | "team:prototype" | "all"
+  if (!key) return { key:"", label:"", targets:[] };
+  if (key === "all") return { key, label:"All", targets:[...ALL_IDS] };
+  if (key.startsWith("team:cad")) return { key:"team:cad", label:"CAD Team", targets:[...CAD_IDS] };
+  if (key.startsWith("team:prototype")) return { key:"team:prototype", label:"Prototype Team", targets:[...PROTO_IDS] };
+  if (key.startsWith("user:")){
+    const id = key.slice("user:".length);
+    const m = MEMBER_BY_ID[id];
+    return m ? { key:`user:${id}`, label:m.name, targets:[id] } : { key, label:"", targets:[] };
+  }
+  return { key, label:key, targets:[] };
+}
+
+let currentUserId = localStorage.getItem(LS_WHO) || "";
+if (currentUserId && MEMBER_BY_ID[currentUserId]) { whoLabel.textContent = MEMBER_BY_ID[currentUserId].name; }
+function setCurrentUser(id){
+  currentUserId = id;
+  localStorage.setItem(LS_WHO, id);
+  const m = MEMBER_BY_ID[id];
+  whoLabel.textContent = m ? m.name : "Select user";
+  renderTasks();
+}
+function openWhoOverlay(){
+  // build buttons (fresh each time in case we change the list)
+  whoList.innerHTML = MEMBERS.map(m => {
+    const initials = m.name.split(" ").map(x=>x[0]).slice(0,2).join("").toUpperCase();
+    const active = m.id === currentUserId ? " isActive" : "";
+    return `
+      <button class="whoCard${active}" type="button" data-who="${m.id}">
+        <div class="whoAvatar">${initials}</div>
+        <div class="whoMeta">
+          <div class="whoName">${escapeHtml(m.name)}</div>
+          <div class="whoTeam">${escapeHtml(m.team)}</div>
+        </div>
+      </button>
+    `;
+  }).join("");
+  whoOverlay.hidden = false;
+  setTimeout(()=> whoList.querySelector("button")?.focus(), 30);
+}
+function closeWhoOverlay(){ whoOverlay.hidden = true; }
+async function ensureWhoSelected(){
+  if (currentUserId && MEMBER_BY_ID[currentUserId]){
+    whoLabel.textContent = MEMBER_BY_ID[currentUserId].name;
+    return;
+  }
+  openWhoOverlay();
+}
+
 
 /* Helpers */
 const $ = (q, el=document) => el.querySelector(q);
@@ -74,6 +140,11 @@ const authForm = $("#authForm");
 const pinInput = $("#pinInput");
 const pinClearBtn = $("#pinClearBtn");
 const authMsg = $("#authMsg");
+
+const whoOverlay = $("#whoOverlay");
+const whoList = $("#whoList");
+const whoBtn = $("#whoBtn");
+const whoLabel = $("#whoLabel");
 const authFooterText = $("#authFooterText");
 
 const themeToggle = $("#themeToggle");
@@ -102,7 +173,6 @@ const taskForm = $("#taskForm");
 const taskDialogTitle = $("#taskDialogTitle");
 const taskDesc = $("#taskDesc");
 const taskAssigned = $("#taskAssigned");
-const taskStatus = $("#taskStatus");
 const taskPriority = $("#taskPriority");
 const taskDue = $("#taskDue");
 const taskNotes = $("#taskNotes");
@@ -211,6 +281,7 @@ async function tryAutoUnlock(){
   if (cached && remotePinHash && cached === remotePinHash){
     isUnlocked = true;
     hideAuth();
+    await ensureWhoSelected();
     return true;
   }
   return false;
@@ -225,6 +296,7 @@ async function unlockWithPin(pin){
     localStorage.setItem(LS_PINHASH, remotePinHash);
     isUnlocked = true;
     hideAuth();
+    await ensureWhoSelected();
     return true;
   }
   return false;
@@ -271,7 +343,7 @@ function startSubscriptions(){
 function renderStats(){
   statLinks.textContent = String(links.length);
   statTasks.textContent = String(tasks.length);
-  const open = tasks.filter(t => (t.status ?? "todo") !== "done").length;
+  const open = tasks.filter(t => !isFullyDone(t)).length;
   statOpen.textContent = String(open);
 }
 
@@ -397,42 +469,73 @@ function parseFSDate(x){
   return null;
 }
 
+/* Tasks */
+function guessAssignedKey(t){
+  if (t.assignedKey) return t.assignedKey;
+  // best-effort for older docs
+  const a = String(t.assignedLabel || t.assigned || "").trim();
+  const found = MEMBERS.find(m => m.name.toLowerCase() === a.toLowerCase());
+  if (found) return `user:${found.id}`;
+  if (a.toLowerCase() === "cad team") return "team:cad";
+  if (a.toLowerCase() === "prototype team") return "team:prototype";
+  if (a.toLowerCase() === "all") return "all";
+  return "";
+}
+
+function getTargets(t){
+  if (Array.isArray(t.targets) && t.targets.length) return t.targets;
+  // migrate older docs: single assignee text -> try match
+  const key = guessAssignedKey(t);
+  return resolveAssignment(key).targets || [];
+}
+
+function isFullyDone(t){
+  if (typeof t.fullyDone === "boolean") return t.fullyDone;
+  const targets = getTargets(t);
+  const doneBy = t.doneBy || {};
+  const doneCount = targets.filter(id => !!doneBy?.[id]).length;
+  return targets.length > 0 && doneCount === targets.length;
+}
+
+function initials(name){
+  return String(name||"").split(" ").filter(Boolean).slice(0,2).map(s=>s[0]).join("").toUpperCase() || "?";
+}
+
 function renderTasks(){
-  const q = searchQuery.trim().toLowerCase();
-  const st = filterStatus.value;
-  const pr = filterPriority.value;
-  const sortMode = sortTasks.value;
+  const statusVal = filterStatus.value || "all";
+  const prioVal = filterPriority.value || "all";
+  const s = (searchQuery || "").trim().toLowerCase();
 
-  let list = [...tasks];
+  let list = tasks.slice();
+  list = list.filter(t=>{
+    const fully = isFullyDone(t);
+    if (statusVal === "open" && fully) return false;
+    if (statusVal === "done" && !fully) return false;
+    if (prioVal !== "all" && (t.priority || "med") !== prioVal) return false;
+    if (s){
+      const hay = [t.desc, t.assignedLabel, t.assigned, t.notes].join(" ").toLowerCase();
+      if (!hay.includes(s)) return false;
+    }
+    return true;
+  });
 
-  // search
-  if (q){
-    list = list.filter(t => {
-      const s = `${t.desc||""} ${t.assigned||""} ${t.notes||""} ${t.status||""} ${t.priority||""}`.toLowerCase();
-      return s.includes(q);
-    });
-  }
-
-  // filters
-  if (st !== "all") list = list.filter(t => (t.status||"todo") === st);
-  if (pr !== "all") list = list.filter(t => (t.priority||"med") === pr);
-
-  // sort
   list.sort((a,b)=>{
-    if (sortMode === "dueAsc"){
+    const mode = sortTasks.value || "recent";
+    if (mode === "due"){
       const da = parseFSDate(a.due) || "9999-12-31";
       const dbb = parseFSDate(b.due) || "9999-12-31";
       return da.localeCompare(dbb);
     }
-    if (sortMode === "priorityDesc"){
-      return (PRIORITY_SCORE[b.priority||"med"]||2) - (PRIORITY_SCORE[a.priority||"med"]||2);
+    if (mode === "priority"){
+      const rank = (p)=> ({high:0, med:1, low:2})[p||"med"] ?? 9;
+      const ra = rank(a.priority);
+      const rb = rank(b.priority);
+      if (ra !== rb) return ra - rb;
+      const ua = a.updatedAt?.seconds || 0;
+      const ub = b.updatedAt?.seconds || 0;
+      return ub - ua;
     }
-    if (sortMode === "createdDesc"){
-      const ca = a.createdAt?.seconds || 0;
-      const cb = b.createdAt?.seconds || 0;
-      return cb - ca;
-    }
-    // updatedDesc default
+    // recent
     const ua = a.updatedAt?.seconds || 0;
     const ub = b.updatedAt?.seconds || 0;
     return ub - ua;
@@ -443,25 +546,63 @@ function renderTasks(){
   tasksBody.innerHTML = list.map(t=>{
     const due = parseFSDate(t.due) || "";
     const safeDesc = escapeHtml(t.desc || "");
-    const safeAssigned = escapeHtml(t.assigned || "");
     const safeNotes = escapeHtml(t.notes || "");
+
+    const key = guessAssignedKey(t);
+    const resolved = resolveAssignment(key);
+    const label = t.assignedLabel || resolved.label || t.assigned || "";
+    const targets = getTargets(t);
+    const doneBy = t.doneBy || {};
+    const doneCount = targets.filter(id => !!doneBy?.[id]).length;
+    const fully = isFullyDone(t);
+    const mine = currentUserId && targets.includes(currentUserId);
+
+    const chips = targets.length ? targets.map(id=>{
+      const m = MEMBER_BY_ID[id];
+      const nm = m ? m.name : id;
+      const isMe = id === currentUserId;
+      const isDone = !!doneBy?.[id];
+      const cls = ["chip", isMe?"chip--me":"", isDone?"chip--done":""].filter(Boolean).join(" ");
+      const title = `${nm}${isMe?" (you)":""}${isDone?" — done":""}`;
+      // only you can toggle your own chip
+      const attr = isMe ? `data-act="toggleDone" data-who="${id}"` : "";
+      return `<span class="${cls}" title="${escapeHtml(title)}" ${attr}>${escapeHtml(initials(nm))}</span>`;
+    }).join("") : `<span class="muted">—</span>`;
+
+    const assigneeOptions = [
+      ['user:youssef_elkhayat','Youssef Elkhayat'],
+      ['user:youssef_roshdy','Youssef Roshdy'],
+      ['user:mohamed_alainiah','Mohamed AlAiniah'],
+      ['user:ahmed_saeed','Ahmed Saeed'],
+      ['user:mohamed_elmansy','Mohamed ElMansy'],
+      ['team:cad','CAD Team'],
+      ['team:prototype','Prototype Team'],
+      ['all','All'],
+    ].map(([v,txt])=>`<option value="${v}" ${v===key?"selected":""}>${txt}</option>`).join("");
+
     return `
-      <tr data-id="${t.id}">
+      <tr data-id="${t.id}" class="${mine?"row--mine":""}">
         <td><input class="cellInput" data-field="desc" value="${safeDesc}" placeholder="Task description" /></td>
-        <td><input class="cellInput" data-field="assigned" value="${safeAssigned}" placeholder="Name" /></td>
         <td>
-          <select class="select" data-field="status">
-            <option value="todo" ${t.status==="todo"?"selected":""}>To do</option>
-            <option value="doing" ${t.status==="doing"?"selected":""}>Doing</option>
-            <option value="blocked" ${t.status==="blocked"?"selected":""}>Blocked</option>
-            <option value="done" ${t.status==="done"?"selected":""}>Done</option>
-          </select>
+          <div class="assignedCell">
+            <select class="select" data-field="assignedKey">${assigneeOptions}</select>
+            <div class="assignedMeta">${escapeHtml(label)}${targets.length?` • ${targets.length} member${targets.length>1?'s':''}`:""}</div>
+          </div>
+        </td>
+        <td>
+          <div class="progressCell">
+            <div class="progressChips">${chips}</div>
+            <div class="progressMeta">
+              <span class="badge">${doneCount}/${targets.length || 0} done</span>
+              ${fully?`<span class="badge badge--done">Fully done</span>`:""}
+            </div>
+          </div>
         </td>
         <td>
           <select class="select" data-field="priority">
-            <option value="low" ${t.priority==="low"?"selected":""}>Low</option>
+            <option value="low" ${(t.priority==="low")?"selected":""}>Low</option>
             <option value="med" ${(!t.priority || t.priority==="med")?"selected":""}>Medium</option>
-            <option value="high" ${t.priority==="high"?"selected":""}>High</option>
+            <option value="high" ${(t.priority==="high")?"selected":""}>High</option>
           </select>
         </td>
         <td><input class="cellInput" data-field="due" type="date" value="${escapeHtml(due)}" /></td>
@@ -478,28 +619,84 @@ function renderTasks(){
   tasksEmpty.hidden = list.length !== 0;
 }
 
-async function createTask(data){
-  await addDoc(tasksCol, {
-    desc: data.desc || "Lorem ipsum",
-    assigned: data.assigned || "",
-    status: data.status || "todo",
-    priority: data.priority || "med",
-    due: data.due || "",
-    notes: data.notes || "",
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-}
-
 async function patchTask(id, patch){
   patch.updatedAt = serverTimestamp();
   await updateDoc(doc(db, "tasks", id), patch);
 }
 
+async function reassignTask(id, assignedKey){
+  const r = resolveAssignment(assignedKey);
+  await patchTask(id, {
+    assignedKey: r.key || assignedKey,
+    assignedLabel: r.label || "",
+    targets: r.targets || [],
+    doneBy: {},
+    fullyDone: false,
+  });
+}
+
+async function toggleMyDone(task){
+  if (!currentUserId) return;
+  const targets = getTargets(task);
+  if (!targets.includes(currentUserId)) return;
+  const doneBy = task.doneBy || {};
+  const isDone = !!doneBy?.[currentUserId];
+
+  const patch = {};
+  patch[`doneBy.${currentUserId}`] = isDone ? deleteField() : serverTimestamp();
+  // compute next done count locally
+  const nextDone = new Set(targets.filter(id => !!doneBy?.[id]));
+  if (isDone) nextDone.delete(currentUserId); else nextDone.add(currentUserId);
+  const fully = targets.length > 0 && nextDone.size === targets.length;
+  patch.fullyDone = fully;
+
+  await patchTask(task.id, patch);
+}
+
+async function createTask(data){
+  const r = resolveAssignment(data.assignedKey);
+  const docRef = await addDoc(tasksCol, {
+    desc: data.desc || "Lorem ipsum",
+    assignedKey: r.key || data.assignedKey || "",
+    assignedLabel: r.label || "",
+    targets: r.targets || [],
+    priority: data.priority || "med",
+    due: data.due || "",
+    notes: data.notes || "",
+    doneBy: {},
+    fullyDone: false,
+    createdBy: currentUserId || "",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+
+  // Email members involved (best-effort; task creation should not fail if email fails)
+  try{
+    const recipients = (r.targets || []).map(id => MEMBER_BY_ID[id]?.email).filter(Boolean);
+    if (recipients.length){
+      await fetch("/.netlify/functions/sendTaskEmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: docRef.id,
+          task: {
+            description: data.desc || "Lorem ipsum",
+            assignedTo: r.label || "",
+            priority: data.priority || "med",
+            due: data.due || "",
+            notes: data.notes || "",
+            createdBy: MEMBER_BY_ID[currentUserId]?.name || "",
+          },
+          recipients,
+        })
+      });
+    }
+  }catch(err){ console.warn("Email notify failed", err); }
+}
+
 async function deleteTask(id){
   await deleteDoc(doc(db, "tasks", id));
 }
-
 /* Notes (debounced save) */
 let notesTimer = null;
 function scheduleNotesSave(){
@@ -534,12 +731,15 @@ function stateAsJSON(){
       order:Number(l.order||0)
     })),
     tasks: tasks.map(t => ({
-      desc:t.desc||"",
-      assigned:t.assigned||"",
-      status:t.status||"todo",
-      priority:t.priority||"med",
+      desc: t.desc || "",
+      assignedKey: guessAssignedKey(t),
+      assignedLabel: t.assignedLabel || "",
+      targets: getTargets(t),
+      priority: t.priority || "med",
       due: parseFSDate(t.due) || "",
-      notes:t.notes||""
+      notes: t.notes || "",
+      doneBy: Object.keys(t.doneBy || {}),
+      fullyDone: isFullyDone(t)
     })),
     notes: notesBox.value || ""
   };
@@ -572,11 +772,14 @@ async function importFromJSON(obj){
     const ref = doc(collection(db,"tasks"));
     batch.set(ref, {
       desc: String(t.desc || "Lorem ipsum"),
-      assigned: String(t.assigned || ""),
-      status: String(t.status || "todo"),
+      assignedKey: String(t.assignedKey || guessAssignedKey(t) || ""),
+      assignedLabel: String(t.assignedLabel || resolveAssignment(String(t.assignedKey || "")).label || ""),
+      targets: Array.isArray(t.targets) && t.targets.length ? t.targets : resolveAssignment(String(t.assignedKey || "")).targets,
       priority: String(t.priority || "med"),
       due: String(t.due || ""),
       notes: String(t.notes || ""),
+      doneBy: Array.isArray(t.doneBy) ? Object.fromEntries(t.doneBy.map(id => [id, true])) : (t.doneBy || {}),
+      fullyDone: Boolean(t.fullyDone),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
@@ -608,6 +811,22 @@ authForm.addEventListener("submit", async (e)=>{
     pinInput.select();
   }
 });
+
+// Who are you? (identity used for per-person task completion)
+whoBtn?.addEventListener("click", ()=> openWhoOverlay());
+whoOverlay?.addEventListener("click", (e)=>{
+  if (e.target === whoOverlay) closeWhoOverlay();
+});
+document.addEventListener("keydown", (e)=>{
+  if (e.key === "Escape" && !whoOverlay.hidden) closeWhoOverlay();
+});
+whoList?.addEventListener("click", (e)=>{
+  const btn = e.target.closest("[data-who]");
+  if (!btn) return;
+  setCurrentUser(btn.dataset.who);
+  closeWhoOverlay();
+});
+
 
 globalSearch.addEventListener("input", ()=>{
   searchQuery = globalSearch.value || "";
@@ -696,73 +915,86 @@ linksGrid.addEventListener("drop", async (e)=>{
 });
 
 /* Tasks dialogs */
-newTaskBtn.addEventListener("click", ()=>{
-  taskDialogTitle.textContent = "New task";
-  taskCreateBtn.textContent = "Create";
-  taskDesc.value = "";
-  taskAssigned.value = "";
-  taskStatus.value = "todo";
-  taskPriority.value = "med";
-  taskDue.value = "";
-  taskNotes.value = "";
-  taskDialog.showModal();
-  setTimeout(()=> taskDesc.focus(), 30);
-});
-taskDialog.addEventListener("close", async ()=>{
-  if (taskDialog.returnValue !== "ok") return;
-  try{
-    await createTask({
-      desc: taskDesc.value.trim() || "Lorem ipsum",
-      assigned: taskAssigned.value.trim(),
-      status: taskStatus.value,
-      priority: taskPriority.value,
-      due: taskDue.value || "",
-      notes: taskNotes.value.trim()
-    });
-  }catch(err){ console.error(err); }
-});
-
-/* Tasks inline editing */
-let patchTimer = null;
-let pendingPatch = null;
+const taskTimers = new Map();
 function scheduleTaskPatch(id, patch){
-  pendingPatch = { id, patch: { ...pendingPatch?.patch, ...patch } };
-  if (patchTimer) clearTimeout(patchTimer);
-  patchTimer = setTimeout(async ()=>{
-    if (!pendingPatch) return;
-    const { id:tid, patch:pp } = pendingPatch;
-    pendingPatch = null;
-    try{ await patchTask(tid, pp); } catch(err){ console.error(err); }
-  }, 350);
+  const cur = taskTimers.get(id) || { t:null, patch:{} };
+  Object.assign(cur.patch, patch);
+  if (cur.t) clearTimeout(cur.t);
+  cur.t = setTimeout(async ()=>{
+    try{
+      await patchTask(id, cur.patch);
+    }catch(err){ console.warn("task patch failed", err); }
+    taskTimers.delete(id);
+  }, 450);
+  taskTimers.set(id, cur);
 }
 
-tasksBody.addEventListener("input", (e)=>{
-  const row = e.target.closest("tr[data-id]");
-  if (!row) return;
-  const id = row.dataset.id;
-  const field = e.target.dataset.field;
-  if (!field) return;
+function openNewTaskDialog(){
+  taskDialogTitle.textContent = "New task";
+  taskDesc.value = "";
+  taskAssigned.value = currentUserId ? `user:${currentUserId}` : "all";
+  taskDue.value = "";
+  taskPriority.value = "med";
+  taskNotes.value = "";
+  taskDialog.showModal();
+}
 
-  let val = e.target.value;
-  if (field === "due") val = val || "";
-  scheduleTaskPatch(id, { [field]: val });
+newTaskBtn.addEventListener("click", openNewTaskDialog);
+
+taskDialog.addEventListener("close", async ()=>{
+  if (taskDialog.returnValue !== "ok") return;
+  const data = {
+    desc: taskDesc.value.trim(),
+    assignedKey: taskAssigned.value,
+    due: taskDue.value || "",
+    priority: taskPriority.value || "med",
+    notes: taskNotes.value.trim(),
+  };
+  await createTask(data);
 });
 
+function getTaskById(id){ return tasks.find(t=>t.id===id); }
+
 tasksBody.addEventListener("click", async (e)=>{
-  const row = e.target.closest("tr[data-id]");
-  if (!row) return;
-  const id = row.dataset.id;
-  const btn = e.target.closest("[data-act='del']");
-  if (!btn) return;
-  if (confirm("Delete this task?")){
-    try{ await deleteTask(id); } catch(err){ console.error(err); }
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = tr.dataset.id;
+  const act = e.target.dataset.act || e.target.closest("[data-act]")?.dataset?.act;
+  if (act === "del"){
+    await deleteTask(id);
+    return;
+  }
+  if (act === "toggleDone"){
+    const t = getTaskById(id);
+    if (!t) return;
+    await toggleMyDone(t);
+    return;
   }
 });
 
-filterStatus.addEventListener("change", renderTasks);
-filterPriority.addEventListener("change", renderTasks);
-sortTasks.addEventListener("change", renderTasks);
+tasksBody.addEventListener("input", (e)=>{
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = tr.dataset.id;
+  const field = e.target.dataset.field;
+  if (!field) return;
+  if (field === "assignedKey") return; // handled on change
+  const val = e.target.value;
+  scheduleTaskPatch(id, { [field]: val });
+});
 
+tasksBody.addEventListener("change", async (e)=>{
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = tr.dataset.id;
+  const field = e.target.dataset.field;
+  if (!field) return;
+  if (field === "assignedKey"){
+    await reassignTask(id, e.target.value);
+    return;
+  }
+  scheduleTaskPatch(id, { [field]: e.target.value });
+});
 /* Notes */
 notesBox.addEventListener("input", scheduleNotesSave);
 

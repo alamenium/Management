@@ -43,6 +43,24 @@
       </div>
     </div>
   </div>
+  <!-- Who are you? -->
+  <div id="whoOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="whoTitle" hidden>
+    <div class="overlay__card">
+      <div class="overlay__brand">
+        <img class="overlay__logo" src="./assets/logo.png" alt="Logo" />
+        <div class="overlay__text">
+          <div class="overlay__kicker">TEAM HUB</div>
+          <h1 id="whoTitle" class="overlay__title">Who are you?</h1>
+          <p class="overlay__sub">Pick yourself once. You can switch later from the top bar.</p>
+        </div>
+      </div>
+
+      <div id="whoList" class="whoGrid" aria-live="polite"></div>
+
+      <p class="hint" id="whoHint">This is used for task highlighting + per-person completion.</p>
+    </div>
+  </div>
+
 
   <!-- App -->
   <header class="topbar">
@@ -66,7 +84,13 @@
           <span id="themeLabel">Dark</span>
         </button>
 
-        <button id="logoutBtn" class="btn btn--pill" type="button" title="Lock">
+        
+        <button id="whoBtn" class="btn btn--pill" type="button" title="Who am I?">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 21a8 8 0 1 0-16 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" stroke="currentColor" stroke-width="2"/></svg>
+          <span id="whoLabel">Select user</span>
+        </button>
+
+<button id="logoutBtn" class="btn btn--pill" type="button" title="Lock">
           <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 16h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M13 19l-3-3 3-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 8V7a4 4 0 0 0-8 0v10a4 4 0 0 0 8 0v-1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           Lock
         </button>
@@ -129,10 +153,8 @@
         <div class="pill"><span id="taskCount">0</span>&nbsp;tasks</div>
 
         <select id="filterStatus" class="select">
-          <option value="all">All statuses</option>
-          <option value="todo">To do</option>
-          <option value="doing">Doing</option>
-          <option value="blocked">Blocked</option>
+          <option value="all">All</option>
+          <option value="open">Open</option>
           <option value="done">Done</option>
         </select>
 
@@ -157,7 +179,7 @@
             <tr>
               <th>Description</th>
               <th>Assigned</th>
-              <th>Status</th>
+              <th>Progress</th>
               <th>Priority</th>
               <th>Due</th>
               <th>Notes</th>
@@ -249,7 +271,16 @@
       <div class="grid2">
         <label class="field">
           <span class="field__label">Assigned to</span>
-          <input id="taskAssigned" class="input" placeholder="Name" />
+          <select id="taskAssigned" class="select" required>
+            <option value="user:youssef_elkhayat">Youssef Elkhayat</option>
+            <option value="user:youssef_roshdy">Youssef Roshdy</option>
+            <option value="user:mohamed_alainiah">Mohamed AlAiniah</option>
+            <option value="user:ahmed_saeed">Ahmed Saeed</option>
+            <option value="user:mohamed_elmansy">Mohamed ElMansy</option>
+            <option value="team:cad">CAD Team</option>
+            <option value="team:prototype">Prototype Team</option>
+            <option value="all">All</option>
+          </select>
         </label>
 
         <label class="field">
@@ -259,16 +290,6 @@
       </div>
 
       <div class="grid2">
-        <label class="field">
-          <span class="field__label">Status</span>
-          <select id="taskStatus" class="select">
-            <option value="todo">To do</option>
-            <option value="doing">Doing</option>
-            <option value="blocked">Blocked</option>
-            <option value="done">Done</option>
-          </select>
-        </label>
-
         <label class="field">
           <span class="field__label">Priority</span>
           <select id="taskPriority" class="select">
