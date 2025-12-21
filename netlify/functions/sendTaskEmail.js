@@ -179,7 +179,7 @@ Created by: ${createdBy || "-"}
 Notes:
 ${notes || "-"}
 
-Check it out: https://capstone.alnajdi.com
+Check it out: https://capston1.netlify.app
 
 — Silicon Hall Management
 `;
