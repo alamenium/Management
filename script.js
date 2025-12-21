@@ -1,11 +1,11 @@
 // Silicon Hall Team Hub — Firebase + per-user done + multi-assign + email on create
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js";
-import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-analytics.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc,
   collection, addDoc, deleteDoc, onSnapshot,
   query, orderBy, serverTimestamp, writeBatch
-} from "https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js";
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 /* Firebase config (hardcoded) */
 const firebaseConfig = {
@@ -19,105 +19,93 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-try{ getAnalytics(app); }catch(_){}
-
-/* Firestore */
+try { getAnalytics(app); } catch {}
 const db = getFirestore(app);
 
-/* Helpers */
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-const escapeHtml = (s) => String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-
-async function sha256Hex(str){
-  const enc = new TextEncoder().encode(str);
-  const hash = await crypto.subtle.digest("SHA-256", enc);
-  return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,"0")).join("");
-}
-// Dev helper: compute SHA-256 hex (useful if you want to update meta/config.pinHash)
-window.teamhubSha256 = sha256Hex;
-
-/* Hardcoded people + teams */
+/* People (hardcoded) */
 const PEOPLE = [
-  { key:"youssef_elkhayat", name:"Youssef Elkhayat", team:"CAD Team", email:"youssifayman2004@gmail.com" },
-  { key:"youssef_roshdy",  name:"Youssef Roshdy",  team:"Prototype Team", email:"yousufdiaa2004@gmail.com" },
-  { key:"mohamed_alainiah",name:"Mohamed AlAiniah",team:"CAD Team", email:"Mohammad.bashar033@gmail.com" },
-  { key:"ahmed_saeed",     name:"Ahmed Saeed",     team:"Prototype Team", email:"saeedahmedsuper@gmail.com" },
-  { key:"mohamed_elmansy", name:"Mohamed ElMansy", team:"CAD Team", email:"mohammadadham20@gmail.com" },
+  { key: "youssef_elkhayat", name: "Youssef Elkhayat", team: "CAD Team", email: "youssifayman2004@gmail.com" },
+  { key: "youssef_roshdy", name: "Youssef Roshdy", team: "Prototype Team", email: "yousufdiaa2004@gmail.com" },
+  { key: "mohamed_alainiah", name: "Mohamed AlAiniah", team: "CAD Team", email: "Mohammad.bashar033@gmail.com" },
+  { key: "ahmed_saeed", name: "Ahmed Saeed", team: "Prototype Team", email: "saeedahmedsuper@gmail.com" },
+  { key: "mohamed_elmancy", name: "Mohamed ElMansy", team: "CAD Team", email: "mohammadadham20@gmail.com" },
 ];
 
 const TEAMS = {
-  "CAD Team": PEOPLE.filter(p=>p.team==="CAD Team").map(p=>p.key),
-  "Prototype Team": PEOPLE.filter(p=>p.team==="Prototype Team").map(p=>p.key),
+  "CAD Team": PEOPLE.filter(p => p.team === "CAD Team").map(p => p.key),
+  "Prototype Team": PEOPLE.filter(p => p.team === "Prototype Team").map(p => p.key),
 };
+const ALL_KEYS = PEOPLE.map(p => p.key);
 
-function teamKeys(){
-  return Object.keys(TEAMS);
+/* Local cache keys */
+const LS_THEME = "sh_theme_v1";
+const LS_PINHASH = "sh_pin_hash_v1";
+const LS_ME = "sh_me_v1";
+
+/* First-run PIN (only if meta/config doesn’t exist yet) */
+const DEFAULT_PIN = "1234";
+
+/* Firestore refs */
+const configRef = doc(db, "meta", "config");
+const notesRef = doc(db, "notes", "shared");
+const linksCol = collection(db, "links");
+const tasksCol = collection(db, "tasks");
+
+/* DOM helpers */
+const $ = (q, el=document) => el.querySelector(q);
+const $$ = (q, el=document) => [...el.querySelectorAll(q)];
+function escapeHtml(s){
+  return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
 }
+async function sha256Hex(text){
+  const enc = new TextEncoder().encode(String(text));
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,"0")).join("");
+}
+window.teamhubSha256 = sha256Hex;
 
-/* DOM */
-// --- Auth/PIN UI (supports both old + new IDs) ---
-const authOverlay =
-    document.querySelector("#authOverlay") ||
-    document.querySelector("#pinOverlay") ||
-    document.querySelector(".overlay");
-
-const pinForm =
-    document.querySelector("#pinForm") ||
-    document.querySelector("#authForm");
-
-const pinInput =
-    document.querySelector("#pinInput");
-
-const pinMsg =
-    document.querySelector("#pinMsg") ||
-    document.querySelector("#authMsg");
-
-const pinFooter =
-    document.querySelector("#pinFooter") ||
-    document.querySelector("#authFooterText");
-
-
-const themeBtn = $("#themeBtn");
-const themeLbl = $("#themeLbl");
-const lockBtn = $("#lockBtn");
-// --- "Who are you?" UI (supports multiple HTML variants) ---
-const whoSwitch =
-    document.querySelector("#whoSwitch") ||
-    document.querySelector("#whoBtn") ||
-    document.querySelector("[data-who-switch]");
-
-const whoPill =
-    document.querySelector("#whoPill") ||
-    document.querySelector("#whoName") ||
-    document.querySelector("[data-who-pill]");
+/* UI refs */
+const pinOverlay = $("#pinOverlay");
+const pinForm = $("#pinForm");
+const pinInput = $("#pinInput");
+const pinMsg = $("#pinMsg");
+const pinFooter = $("#pinFooter");
+const forgetPinBtn = $("#forgetPinBtn");
 
 const whoDialog = $("#whoDialog");
 const whoList = $("#whoList");
 const whoOk = $("#whoOk");
+const meChip = $("#meChip");
+const meName = $("#meName");
+const meTeam = $("#meTeam");
 
-const searchInput = $("#searchInput");
+const themeBtn = $("#themeBtn");
+const themeLbl = $("#themeLbl");
+const lockBtn = $("#lockBtn");
 
 const statTasks = $("#statTasks");
-const statMine  = $("#statMine");
-const statOpen  = $("#statOpen");
+const statMine = $("#statMine");
+const statOpen = $("#statOpen");
 
+const searchBox = $("#searchBox");
 const tasksBody = $("#tasksBody");
-const newTaskBtn = $("#newTaskBtn");
+const tasksEmpty = $("#tasksEmpty");
+
 const taskDialog = $("#taskDialog");
-const taskForm = $("#taskForm");
 const taskDesc = $("#taskDesc");
-const taskAssigned = $("#taskAssigned"); // will be repurposed into multi-select UI
 const taskDue = $("#taskDue");
-const taskStatus = $("#taskStatus");
 const taskPriority = $("#taskPriority");
 const taskNotes = $("#taskNotes");
+const taskForm = $("#taskForm");
+
+const assignPicker = $("#assignPicker");
+const assignMenu = $("#assignMenu");
+const assignSummary = $("#assignSummary");
 
 const linksGrid = $("#linksGrid");
 const newLinkBtn = $("#newLinkBtn");
@@ -149,160 +137,80 @@ function applyTheme(theme){
   themeLbl.textContent = theme === "light" ? "Light" : "Dark";
 }
 function loadTheme(){
-  applyTheme(localStorage.getItem("teamhub_theme") || "dark");
+  applyTheme(localStorage.getItem(LS_THEME) || "dark");
 }
-function toggleTheme(){
+themeBtn.addEventListener("click", ()=>{
   const cur = document.documentElement.dataset.theme || "dark";
   const next = cur === "dark" ? "light" : "dark";
-  localStorage.setItem("teamhub_theme", next);
+  localStorage.setItem(LS_THEME, next);
   applyTheme(next);
-}
-themeBtn?.addEventListener("click", toggleTheme);
+});
 
-/* LocalStorage keys */
-const LS_PINHASH = "teamhub_pinHash";
-const LS_UNLOCKED = "teamhub_unlocked";
-const LS_ME = "teamhub_me";
-
-/* Firestore refs */
-const configRef = doc(db, "meta", "config");
-const notesRef  = doc(db, "notes", "shared");
-const tasksCol  = collection(db, "tasks");
-const linksCol  = collection(db, "links");
-
-/* Bootstrap: create required docs if clean slate */
+/* Bootstrap Firestore on clean slate */
 async function ensureBootstrap(){
-  // meta/config
   const cfgSnap = await getDoc(configRef);
   if (!cfgSnap.exists()){
-    const defaultPin = "0750";
-    const pinHash = await sha256Hex(defaultPin);
-    await setDoc(configRef, {
-      pinHash,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      note: "Change pinHash to SHA-256 hex of your PIN"
-    });
+    const pinHash = await sha256Hex(DEFAULT_PIN);
+    await setDoc(configRef, { pinHash, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), version: 1 });
   }
-  // notes/shared
-  const ns = await getDoc(notesRef);
-  if (!ns.exists()){
-    await setDoc(notesRef, { text:"", createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  const notesSnap = await getDoc(notesRef);
+  if (!notesSnap.exists()){
+    await setDoc(notesRef, { text: "", updatedAt: serverTimestamp() });
   }
 }
+
+/* Auth */
+function showPin(msg=""){
+  pinOverlay.hidden = false;
+  pinMsg.textContent = msg;
+  setTimeout(()=> pinInput?.focus(), 50);
+}
+function hidePin(){
+  pinOverlay.hidden = true;
+  pinMsg.textContent = "";
+}
+function setPinFooter(s){ pinFooter.textContent = s; }
 
 async function fetchRemotePinHash(){
   const snap = await getDoc(configRef);
   remotePinHash = snap.data()?.pinHash || null;
-  return remotePinHash;
-}
-
-/* Config watch (if PIN changes while unlocked, require re-entry) */
-let unsubConfig = null;
-function startConfigWatch(){
-  if (unsubConfig) unsubConfig();
-  unsubConfig = onSnapshot(configRef, (snap)=>{
-    const ph = snap.data()?.pinHash || null;
-    if (ph && ph !== remotePinHash){
-      remotePinHash = ph;
-      const cached = localStorage.getItem(LS_PINHASH);
-      if (isUnlocked && (!cached || cached !== remotePinHash)){
-        lock();
-      }
-    } else {
-      remotePinHash = ph;
-    }
-  });
-}
-
-/* Auth */
-function showPin(msg = ""){
-  if (!authOverlay){
-    console.error("PIN overlay not found in DOM. Check #authOverlay in index.html");
-    return;
-  }
-
-  // support both patterns: [hidden] or .hidden
-  authOverlay.hidden = false;
-  authOverlay.classList.remove("hidden");
-
-  if (pinMsg) pinMsg.textContent = msg;
-}
-
-function hidePin(){
-  if (!authOverlay) return;
-
-  authOverlay.hidden = true;
-  authOverlay.classList.add("hidden");
-
-  if (pinMsg) pinMsg.textContent = "";
-}
-
-function setPinFooter(t){
-  if (pinFooter) pinFooter.textContent = t;
-}
-
-
-function setMeByKey(key){
-  const p = PEOPLE.find(x => x.key === key);
-  if (!p) return;
-
-  me = p;
-  localStorage.setItem(LS_ME, p.key);
-
-  // These elements may not exist depending on your HTML version
-  if (whoPill)   whoPill.textContent = p.name;
-  if (whoSwitch) whoSwitch.textContent = p.name;
-
-  // Optional: also update header/subtitle if you have one
-  const anyLabel =
-      document.querySelector("[data-who-label]") ||
-      document.querySelector("#currentUserLabel");
-  if (anyLabel) anyLabel.textContent = p.name;
-}
-
-
-async function unlockWithPin(pin){
-  if (!pin) return false;
-  if (!remotePinHash) await fetchRemotePinHash();
-  const h = await sha256Hex(pin);
-
-  if (h !== remotePinHash) return false;
-
-  // cache success
-  localStorage.setItem(LS_PINHASH, remotePinHash);
-  localStorage.setItem(LS_UNLOCKED, "1");
-  isUnlocked = true;
-  hidePin();
-  return true;
 }
 
 async function tryAutoUnlock(){
-  const ok = localStorage.getItem(LS_UNLOCKED) === "1";
-  const cachedHash = localStorage.getItem(LS_PINHASH);
-  if (!ok || !cachedHash) return false;
-  if (!remotePinHash) await fetchRemotePinHash();
-  if (cachedHash !== remotePinHash) return false;
-  isUnlocked = true;
-  hidePin();
-  return true;
+  const cached = localStorage.getItem(LS_PINHASH);
+  if (cached && remotePinHash && cached === remotePinHash){
+    isUnlocked = true;
+    hidePin();
+    return true;
+  }
+  return false;
+}
+
+async function unlockWithPin(pin){
+  const hash = await sha256Hex(pin);
+  if (remotePinHash && hash === remotePinHash){
+    localStorage.setItem(LS_PINHASH, remotePinHash);
+    isUnlocked = true;
+    hidePin();
+    return true;
+  }
+  return false;
 }
 
 function lock(){
   isUnlocked = false;
-  localStorage.removeItem(LS_UNLOCKED);
   localStorage.removeItem(LS_PINHASH);
-
-  // stop listeners
-  stopSubscriptions();
-
-  showPin("PIN changed or session locked.");
-  setPinFooter("Enter PIN to unlock.");
+  showPin("Locked. Enter PIN to continue.");
 }
 
-pinForm?.addEventListener("submit", async (e)=>{
+forgetPinBtn.addEventListener("click", ()=>{
+  localStorage.removeItem(LS_PINHASH);
+  pinMsg.textContent = "Forgotten on this device.";
+});
+
+pinForm.addEventListener("submit", async (e)=>{
   e.preventDefault();
-  pinMsg.textContent = "";
+  pinMsg.textContent = "Checking…";
   const ok = await unlockWithPin(pinInput.value.trim());
   if (!ok){
     pinMsg.textContent = "Wrong PIN.";
@@ -319,12 +227,23 @@ function renderWho(){
   whoList.innerHTML = PEOPLE.map(p=>{
     const sel = me?.key === p.key ? "whoItem--sel" : "";
     return `
-      <button class="whoItem ${sel}" type="button" data-key="${p.key}">
-        <div class="whoItem__name">${escapeHtml(p.name)}</div>
-        <div class="whoItem__meta">${escapeHtml(p.team)}</div>
-      </button>
+      <div class="whoItem ${sel}" data-key="${p.key}">
+        <div>
+          <div class="whoItem__name">${escapeHtml(p.name)}</div>
+          <div class="whoItem__team">${escapeHtml(p.team)}</div>
+        </div>
+        <div class="badge badge--team">${escapeHtml(p.team)}</div>
+      </div>
     `;
   }).join("");
+}
+
+function setMeByKey(key){
+  const p = PEOPLE.find(x=>x.key===key) || PEOPLE[0];
+  me = { ...p };
+  localStorage.setItem(LS_ME, me.key);
+  meName.textContent = me.name;
+  meTeam.textContent = me.team;
 }
 
 async function ensureIdentity(){
@@ -339,39 +258,29 @@ async function ensureIdentity(){
   whoOk.disabled = true;
 }
 
-whoList?.addEventListener("click", (e)=>{
+whoList.addEventListener("click", (e)=>{
   const item = e.target.closest(".whoItem");
   if (!item) return;
   const key = item.dataset.key;
-  setMeByKey(key);
-  $$(".whoItem").forEach(x=>x.classList.remove("whoItem--sel"));
-  item.classList.add("whoItem--sel");
+  $$(".whoItem", whoList).forEach(el=> el.classList.toggle("whoItem--sel", el.dataset.key === key));
   whoOk.disabled = false;
+  whoOk.dataset.sel = key;
 });
 
-whoOk?.addEventListener("click", ()=>{
-  whoDialog.close();
+whoDialog.addEventListener("close", ()=>{
+  if (whoDialog.returnValue !== "ok") return;
+  const key = whoOk.dataset.sel;
+  if (key) setMeByKey(key);
 });
 
-whoSwitch?.addEventListener("click", ()=>{
+meChip.addEventListener("click", ()=>{
   renderWho();
-  whoDialog.showModal();
   whoOk.disabled = true;
-});
-
-whoPill?.addEventListener("click", ()=>{
-  renderWho();
+  delete whoOk.dataset.sel;
   whoDialog.showModal();
-  whoOk.disabled = true;
 });
 
-lockBtn?.addEventListener("click", lock);
-
-searchInput?.addEventListener("input", ()=>{
-  searchQ = searchInput.value.trim().toLowerCase();
-  renderTasks();
-  renderLinks();
-});
+lockBtn.addEventListener("click", lock);
 
 /* Assignment picker (multi-select) */
 const ASSIGN_OPTIONS = [
@@ -381,674 +290,100 @@ const ASSIGN_OPTIONS = [
   ...PEOPLE.map(p => ({ id:`person:${p.key}`, label:p.name, meta:p.team }))
 ];
 
-let selectedAssign = new Set();
+let selectedAssign = new Set(); // option ids
 
-function buildAssignUI(){
-  // replace the old single-line input with a multi-select chip picker (without changing HTML file)
-  const field = taskAssigned?.closest(".field");
-  if (!field) return;
-
-  // If already built, skip
-  if ($("#assignPicker")) return;
-
-  const label = field.querySelector(".field__label");
-  const old = taskAssigned;
-
-  const wrap = document.createElement("div");
-  wrap.id = "assignPicker";
-  wrap.className = "assignPicker";
-
-  wrap.innerHTML = `
-    <div class="assignPicker__chips" id="assignChips"></div>
-    <div class="assignPicker__row">
-      <select id="assignSelect" class="select">
-        <option value="" selected>Select assignees…</option>
-        ${ASSIGN_OPTIONS.map(o=>`<option value="${escapeHtml(o.id)}">${escapeHtml(o.label)} — ${escapeHtml(o.meta)}</option>`).join("")}
-      </select>
-      <button type="button" class="smallBtn" id="assignClear">Clear</button>
-    </div>
-    <div class="muted2" style="margin-top:8px">Pick multiple (people/teams/all). Duplicates are merged.</div>
-  `;
-
-  // keep label
-  if (label) label.textContent = "Assign to (multi)";
-
-  // hide old input
-  old.classList.add("hidden");
-  old.disabled = true;
-
-  field.appendChild(wrap);
-
-  const select = $("#assignSelect");
-  const chips = $("#assignChips");
-  const clear = $("#assignClear");
-
-  function renderAssignChips(){
-    const arr = Array.from(selectedAssign);
-    if (!arr.length){
-      chips.innerHTML = `<span class="muted2">No one selected.</span>`;
-      return;
-    }
-    chips.innerHTML = arr.map(id=>{
-      const o = ASSIGN_OPTIONS.find(x=>x.id===id);
-      const label = o ? o.label : id;
-      return `<button type="button" class="chip chip--x" data-id="${escapeHtml(id)}">${escapeHtml(label)} <span aria-hidden="true">×</span></button>`;
-    }).join("");
-  }
-
-  select.addEventListener("change", ()=>{
-    const v = select.value;
-    if (!v) return;
-    selectedAssign.add(v);
-    select.value = "";
-    renderAssignChips();
-  });
-
-  chips.addEventListener("click", (e)=>{
-    const btn = e.target.closest(".chip--x");
-    if (!btn) return;
-    selectedAssign.delete(btn.dataset.id);
-    renderAssignChips();
-  });
-
-  clear.addEventListener("click", ()=>{
-    selectedAssign.clear();
-    renderAssignChips();
-  });
-
-  renderAssignChips();
-}
-
-function expandTargetsToPeople(targetIds){
-  const result = new Set();
-
-  // If "all" selected => everyone
-  if (targetIds.includes("all")){
-    PEOPLE.forEach(p=>result.add(p.key));
-    return Array.from(result);
-  }
-
-  for (const tid of targetIds){
-    if (tid.startsWith("person:")){
-      result.add(tid.slice("person:".length));
-    } else if (tid.startsWith("team:")){
-      const team = tid.slice("team:".length);
-      (TEAMS[team] || []).forEach(k=>result.add(k));
-    }
-  }
-  return Array.from(result);
-}
-
-/* Tasks */
-function isTaskMine(t){
-  if (!me) return false;
-  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
-  return involved.includes(me.key);
-}
-
-function isFullyDone(t){
-  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
-  const doneBy = t.doneBy || {};
-  if (!involved.length) return false;
-  return involved.every(k => !!doneBy[k]);
-}
-
-function progressChips(t){
-  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
-  const doneBy = t.doneBy || {};
-  if (!involved.length) return `<span class="muted2">—</span>`;
-
-  const chips = involved.map(k=>{
-    const p = PEOPLE.find(x=>x.key===k);
-    const name = p ? p.name : k;
-    const initials = name.split(/\s+/).slice(0,2).map(s=>s[0]?.toUpperCase()||"").join("");
-    const done = !!doneBy[k];
-    const cls = done ? "pchip pchip--done" : "pchip";
-    return `<span class="${cls}" title="${escapeHtml(name)}">${escapeHtml(initials||"?")}</span>`;
-  }).join("");
-
-  const doneCount = involved.filter(k=>!!doneBy[k]).length;
-  return `<div class="pwrap">${chips}</div><div class="muted2" style="margin-top:6px">${doneCount}/${involved.length} done</div>`;
-}
-
-function assignedBadges(t){
-  const targets = Array.isArray(t.assignTargets) ? t.assignTargets : [];
-  if (!targets.length) return `<span class="muted2">—</span>`;
-  return targets.map(id=>{
-    const o = ASSIGN_OPTIONS.find(x=>x.id===id);
-    const label = o ? o.label : id;
-    return `<span class="chip">${escapeHtml(label)}</span>`;
-  }).join("");
-}
-
-function matchesSearchTask(t){
-  if (!searchQ) return true;
-  const hay = [
-    t.desc, t.notes, t.priority, t.status,
-    ...(t.assignTargets||[]),
-    ...(t.involvedPeople||[])
-  ].join(" ").toLowerCase();
-  return hay.includes(searchQ);
-}
-
-function renderTasks(){
-  const view = tasks.filter(matchesSearchTask);
-
-  tasksBody.innerHTML = view.map((t)=>{
-    const mine = isTaskMine(t);
-    const fully = isFullyDone(t);
-
-    const rowCls = [
-      mine ? "row--mine" : "",
-      fully ? "row--done" : ""
-    ].join(" ").trim();
-
-    const desc = escapeHtml(t.desc || "Lorem ipsum");
-    const due = escapeHtml(t.due || "");
-    const notes = escapeHtml(t.notes || "");
-    const pr = escapeHtml(t.priority || "med");
-
-    // show checkbox only if you’re involved
-    const myCell = mine
-        ? `
-        <label class="myDoneWrap" title="Only marks your own completion">
-          <input type="checkbox" class="myDone" data-id="${t.id}" ${t.doneBy?.[me.key] ? "checked" : ""} />
-          <span class="muted2">My done</span>
-        </label>
-      `
-        : `<span class="muted2">—</span>`;
-
-    const doneBadge = fully
-        ? `<span class="badge badge--done">Fully done</span>`
-        : `<span class="badge badge--todo">In progress</span>`;
-
+function renderAssignMenu(){
+  assignMenu.innerHTML = ASSIGN_OPTIONS.map(opt=>{
+    const checked = selectedAssign.has(opt.id) ? "checked" : "";
     return `
-      <tr data-id="${t.id}" class="${rowCls}">
-        <td class="checkCell">${myCell}</td>
-        <td><input class="cellInput taskEdit" data-field="desc" value="${desc}" placeholder="Task…" /></td>
-        <td><div class="assignChips">${assignedBadges(t)}</div></td>
-        <td>
-          <div class="progress">${progressChips(t)}</div>
-          <div style="margin-top:8px">${doneBadge}</div>
-        </td>
-        <td><input class="cellInput taskEdit" data-field="due" type="date" value="${due}" /></td>
-        <td><input class="cellInput taskEdit" data-field="notes" value="${notes}" placeholder="Notes…" /></td>
-        <td>
-          <select class="select taskEdit" data-field="priority" aria-label="Priority">
-            <option value="low" ${pr==="low"?"selected":""}>Low</option>
-            <option value="med" ${pr==="med"?"selected":""}>Med</option>
-            <option value="high" ${pr==="high"?"selected":""}>High</option>
-          </select>
-        </td>
-        <td>
-          <div class="actionsRight">
-            <button class="smallBtn danger" data-act="del">Delete</button>
-          </div>
-        </td>
-      </tr>
+      <div class="pickerRow" data-id="${opt.id}">
+        <input type="checkbox" ${checked} tabindex="-1" />
+        <div>${escapeHtml(opt.label)}</div>
+        <div class="pickerRow__meta">${escapeHtml(opt.meta)}</div>
+      </div>
     `;
   }).join("");
 }
 
-function renderStats(){
-  statTasks.textContent = String(tasks.length);
-  const mine = me ? tasks.filter(isTaskMine).length : 0;
-  statMine.textContent = String(mine);
-  const open = tasks.filter(t => !isFullyDone(t)).length;
-  statOpen.textContent = String(open);
+function updateAssignSummary(){
+  if (selectedAssign.size === 0){
+    assignSummary.textContent = "Select people / teams…";
+    return;
+  }
+  const labels = ASSIGN_OPTIONS.filter(o=>selectedAssign.has(o.id)).map(o=>o.label);
+  assignSummary.textContent = labels.join(", ");
 }
 
-/* Task creation */
-newTaskBtn?.addEventListener("click", ()=>{
-  buildAssignUI();
-  // reset
-  taskForm.reset();
-  selectedAssign.clear();
-  const chips = $("#assignChips");
-  if (chips) chips.innerHTML = `<span class="muted2">No one selected.</span>`;
-  taskDialog.showModal();
-});
+function toggleAssignMenu(force){
+  const open = force ?? assignMenu.hidden;
+  assignMenu.hidden = !open;
+  assignPicker.setAttribute("aria-expanded", String(open));
+  if (open) renderAssignMenu();
+}
 
-taskForm?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if (!isUnlocked) return;
-
-  const desc = taskDesc.value.trim();
-  if (!desc) return;
-
-  const targets = Array.from(selectedAssign);
-  // fallback if user didn't pick anything => Lorem ipsum targets
-  const assignTargets = targets.length ? targets : ["all"];
-
-  const involvedPeople = expandTargetsToPeople(assignTargets);
-  const doneBy = {};
-  involvedPeople.forEach(k => doneBy[k] = false);
-
-  const task = {
-    desc,
-    due: taskDue.value || "",
-    status: taskStatus.value || "todo",
-    priority: taskPriority.value || "med",
-    notes: taskNotes.value || "",
-    assignTargets,
-    involvedPeople,
-    doneBy,
-    createdBy: me?.key || null,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  };
-
-  try{
-    const ref = await addDoc(tasksCol, task);
-    taskDialog.close();
-
-    // Email (best-effort)
-    try{
-      await sendTaskEmail({
-        ...task,
-        id: ref.id
-      }, involvedPeople);
-    }catch(_){}
-  }catch(err){
-    console.error(err);
-    alert("Create failed. Check Firestore rules.");
+assignPicker.addEventListener("click", ()=> toggleAssignMenu(assignMenu.hidden));
+document.addEventListener("click", (e)=>{
+  if (!assignPicker.contains(e.target) && !assignMenu.contains(e.target)){
+    assignMenu.hidden = true;
+    assignPicker.setAttribute("aria-expanded","false");
   }
 });
-
-/* Email on create via Netlify Function */
-async function sendTaskEmail(task, recipientsKeys){
-  // compute emails from keys (hardcoded list only)
-  const recipients = recipientsKeys
-      .map(k => PEOPLE.find(p=>p.key===k)?.email)
-      .filter(Boolean);
-
-  if (!recipients.length) return;
-
-  try{
-    const res = await fetch("/.netlify/functions/sendTaskEmail", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        task: {
-          desc: task.desc,
-          due: task.due,
-          status: task.status,
-          priority: task.priority,
-          notes: task.notes,
-          assignTargets: task.assignTargets || [],
-          involvedPeople: task.involvedPeople || [],
-          id: task.id
-        },
-        recipients
-      })
-    });
-    if (!res.ok){
-      const txt = await res.text().catch(()=> "");
-      console.warn("Email function failed:", res.status, txt);
-    }
-  }catch(e){
-    console.warn("Email skipped:", e);
-  }
-}
-
-/* Task editing (desc/due/notes/priority only; assignments locked) */
-const patchTimers = new Map();      // taskId -> timeout
-const pendingPatches = new Map();  // taskId -> merged patch
-
-function scheduleTaskPatch(id, patch){
-  const curr = pendingPatches.get(id) || {};
-  pendingPatches.set(id, { ...curr, ...patch });
-
-  if (patchTimers.has(id)) clearTimeout(patchTimers.get(id));
-  patchTimers.set(id, setTimeout(async ()=>{
-    const pp = pendingPatches.get(id);
-    pendingPatches.delete(id);
-    patchTimers.delete(id);
-    if (!pp) return;
-
-    try{
-      pp.updatedAt = serverTimestamp();
-      await updateDoc(doc(db, "tasks", id), pp);
-    }catch(err){
-      console.error(err);
-    }
-  }, 400));
-}
-
-// Task field edits — commit on blur/change (NOT on every keystroke)
-function commitTaskField(el){
-  const row = el.closest("tr[data-id]");
+assignMenu.addEventListener("click", (e)=>{
+  const row = e.target.closest(".pickerRow");
   if (!row) return;
   const id = row.dataset.id;
-  const field = el.dataset.field;
-  if (!field) return;
-
-  let val = el.value;
-  if (el.type === "date") val = val || "";
-
-  scheduleTaskPatch(id, { [field]: val });
-}
-
-// Date/select changes: save immediately (one write per user action)
-tasksBody.addEventListener("change", (e)=>{
-  const el = e.target.closest(".taskEdit");
-  if (!el) return;
-
-  // ignore "my done" checkbox here (handled below)
-  if (el.classList.contains("myDone")) return;
-
-  commitTaskField(el);
+  if (selectedAssign.has(id)) selectedAssign.delete(id);
+  else selectedAssign.add(id);
+  renderAssignMenu();
+  updateAssignSummary();
 });
 
-// Text inputs: save when user leaves the field (one write per edit)
-tasksBody.addEventListener("blur", (e)=>{
-  const el = e.target.closest(".taskEdit");
-  if (!el) return;
-
-  // ignore "my done" checkbox here (handled below)
-  if (el.classList.contains("myDone")) return;
-
-  commitTaskField(el);
-}, true);
-
-/* My done checkbox (ONLY your own) */
-tasksBody.addEventListener("change", async (e)=>{
-  const cb = e.target.closest(".myDone");
-  if (!cb) return;
-  const id = cb.dataset.id;
-  if (!me) return;
-
-  // Confirm you’re actually involved (defensive)
-  const t = tasks.find(x=>x.id===id);
-  if (!t) return;
-  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
-  if (!involved.includes(me.key)) return;
-
-  const next = !!cb.checked;
-
-  try{
-    const key = `doneBy.${me.key}`;
-    await updateDoc(doc(db, "tasks", id), { [key]: next, updatedAt: serverTimestamp() });
-  }catch(err){
-    console.error(err);
-    cb.checked = !next; // revert
-    alert("Update failed. Check Firestore rules.");
+/* Expand assignment -> involved people keys */
+function computeInvolvedPeople(assignSet){
+  const s = new Set();
+  const hasAll = assignSet.has("all");
+  if (hasAll){
+    ALL_KEYS.forEach(k=>s.add(k));
+    return [...s];
   }
-});
-
-/* Delete (available to everyone) */
-tasksBody.addEventListener("click", async (e)=>{
-  const btn = e.target.closest("[data-act='del']");
-  if (!btn) return;
-  const row = e.target.closest("tr[data-id]");
-  if (!row) return;
-  const id = row.dataset.id;
-
-  if (!confirm("Delete this task?")) return;
-
-  try{
-    await deleteDoc(doc(db,"tasks", id));
-  }catch(err){
-    console.error(err);
-    alert("Delete failed. Check Firestore rules.");
-  }
-});
-
-/* Notes (throttled + debounced to avoid Firestore per-doc write limits) */
-let notesTimer = null;
-let lastNotesWriteAt = 0;
-
-async function saveNotesNow(){
-  const v = notesBox.value;
-
-  // Don’t write if nothing changed vs latest synced value
-  if (v === notesText){
-    notesStatus.textContent = "Synced";
-    return;
-  }
-
-  // Throttle: don’t write more often than every 2500ms
-  const now = Date.now();
-  const wait = Math.max(0, 2500 - (now - lastNotesWriteAt));
-  if (wait > 0){
-    clearTimeout(notesTimer);
-    notesTimer = setTimeout(saveNotesNow, wait);
-    return;
-  }
-
-  notesStatus.textContent = "Saving…";
-  try{
-    await updateDoc(notesRef, { text: v, updatedAt: serverTimestamp() });
-    lastNotesWriteAt = Date.now();
-    notesStatus.textContent = "Saved";
-  }catch(err){
-    console.error(err);
-    notesStatus.textContent = "Save failed";
-  }
-}
-
-notesBox.addEventListener("input", ()=>{
-  notesStatus.textContent = "Typing…";
-  clearTimeout(notesTimer);
-  notesTimer = setTimeout(saveNotesNow, 2000); // only after user stops typing
-});
-
-notesBox.addEventListener("blur", ()=>{
-  saveNotesNow(); // save when leaving the box
-});
-
-/* Links (simple CRUD) */
-let editingLinkId = null;
-function linkCardHTML(l){
-  const title = escapeHtml(l.title || "Lorem ipsum");
-  const desc = escapeHtml(l.desc || "Lorem ipsum");
-  const url = escapeHtml(l.url || "#");
-  return `
-    <div class="linkCard" data-id="${l.id}">
-      <div class="linkCard__top">
-        <div>
-          <div class="linkCard__title">${title}</div>
-          <div class="linkCard__url">${url}</div>
-        </div>
-        <div class="linkCard__actions">
-          <button class="linkCard__btn" data-act="edit" title="Edit">
-            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-          </button>
-          <button class="linkCard__btn" data-act="del" title="Delete">
-            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M3 6h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 6V4h8v2" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
-      </div>
-      <div class="linkCard__desc">${desc}</div>
-      <a class="linkCard__open" href="${url}" target="_blank" rel="noopener">Open</a>
-    </div>
-  `;
-}
-
-function matchesSearchLink(l){
-  if (!searchQ) return true;
-  const hay = [l.title,l.desc,l.url].join(" ").toLowerCase();
-  return hay.includes(searchQ);
-}
-
-function renderLinks(){
-  const view = links.filter(matchesSearchLink);
-  linksGrid.innerHTML = view.map(linkCardHTML).join("");
-}
-
-newLinkBtn?.addEventListener("click", ()=>{
-  editingLinkId = null;
-  linkForm.reset();
-  linkDialog.showModal();
-});
-
-linkForm?.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  if (!isUnlocked) return;
-
-  const title = linkTitle.value.trim() || "Lorem ipsum";
-  const url = linkUrl.value.trim() || "#";
-  const desc = linkDesc.value.trim() || "Lorem ipsum";
-
-  try{
-    if (editingLinkId){
-      await updateDoc(doc(db,"links", editingLinkId), { title, url, desc, updatedAt: serverTimestamp() });
-    } else {
-      const order = links.length ? (Math.max(...links.map(x=>Number(x.order||0))) + 1) : 1;
-      await addDoc(linksCol, { title, url, desc, order, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    }
-    linkDialog.close();
-  }catch(err){
-    console.error(err);
-    alert("Link save failed. Check Firestore rules.");
-  }
-});
-
-linksGrid?.addEventListener("click", async (e)=>{
-  const card = e.target.closest(".linkCard");
-  if (!card) return;
-  const id = card.dataset.id;
-
-  if (e.target.closest("[data-act='edit']")){
-    const l = links.find(x=>x.id===id);
-    if (!l) return;
-    editingLinkId = id;
-    linkTitle.value = l.title || "";
-    linkUrl.value = l.url || "";
-    linkDesc.value = l.desc || "";
-    linkDialog.showModal();
-    return;
-  }
-
-  if (e.target.closest("[data-act='del']")){
-    if (!confirm("Delete this link?")) return;
-    try{
-      await deleteDoc(doc(db,"links", id));
-    }catch(err){
-      console.error(err);
-      alert("Delete failed. Check Firestore rules.");
+  for (const id of assignSet){
+    if (id.startsWith("person:")){
+      s.add(id.replace("person:",""));
+    } else if (id.startsWith("team:")){
+      const teamName = id.replace("team:","");
+      (TEAMS[teamName] || []).forEach(k=>s.add(k));
     }
   }
-});
+  return [...s];
+}
 
-/* Drag reorder links (writes only on drop) */
-let dragId = null;
-linksGrid?.addEventListener("dragstart", (e)=>{
-  const card = e.target.closest(".linkCard");
-  if (!card) return;
-  dragId = card.dataset.id;
-  e.dataTransfer.effectAllowed = "move";
-});
-
-linksGrid?.addEventListener("dragover", (e)=>{
-  if (!dragId) return;
-  e.preventDefault();
-  e.dataTransfer.dropEffect = "move";
-});
-
-linksGrid?.addEventListener("drop", async (e)=>{
-  if (!dragId) return;
-  e.preventDefault();
-  const target = e.target.closest(".linkCard");
-  if (!target) return;
-  const dropId = target.dataset.id;
-  if (dropId === dragId) return;
-
-  const from = links.findIndex(x=>x.id===dragId);
-  const to   = links.findIndex(x=>x.id===dropId);
-  if (from<0 || to<0) return;
-
-  const next = links.slice();
-  const [moved] = next.splice(from,1);
-  next.splice(to,0,moved);
-
-  // set consecutive order values
-  try{
-    const batch = writeBatch(db);
-    next.forEach((l, i)=>{
-      batch.update(doc(db,"links", l.id), { order: i+1, updatedAt: serverTimestamp() });
-    });
-    await batch.commit();
-  }catch(err){
-    console.error(err);
-    alert("Reorder failed. Check Firestore rules.");
-  }finally{
-    dragId = null;
-  }
-});
-
-/* Export/Import */
-exportBtn?.addEventListener("click", ()=>{
-  const payload = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    tasks,
-    links,
-    notesText
-  };
-  const blob = new Blob([JSON.stringify(payload,null,2)], { type:"application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "teamhub-export.json";
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
-
-importFile?.addEventListener("change", async ()=>{
-  const file = importFile.files?.[0];
-  if (!file) return;
-
-  try{
-    const text = await file.text();
-    const data = JSON.parse(text);
-
-    if (!confirm("Import will overwrite your current tasks/links/notes. Continue?")){
-      importFile.value = "";
-      return;
-    }
-
-    // wipe + restore
-    // NOTE: this is best-effort and may be slow; use carefully
-    const batch = writeBatch(db);
-
-    // delete existing tasks/links by batching (limited; for big data consider server-side)
-    tasks.forEach(t => batch.delete(doc(db,"tasks", t.id)));
-    links.forEach(l => batch.delete(doc(db,"links", l.id)));
-
-    // commit deletes first
-    await batch.commit();
-
-    // add new docs
-    for (const t of (data.tasks||[])){
-      const clean = { ...t };
-      delete clean.id;
-      clean.createdAt = serverTimestamp();
-      clean.updatedAt = serverTimestamp();
-      await addDoc(tasksCol, clean);
-    }
-    for (const l of (data.links||[])){
-      const clean = { ...l };
-      delete clean.id;
-      clean.createdAt = serverTimestamp();
-      clean.updatedAt = serverTimestamp();
-      await addDoc(linksCol, clean);
-    }
-
-    await updateDoc(notesRef, { text: String(data.notesText||""), updatedAt: serverTimestamp() });
-
-    alert("Imported.");
-  }catch(err){
-    console.error(err);
-    alert("Import failed.");
-  }finally{
-    importFile.value = "";
-  }
-});
+function computeRecipients(involvedKeys){
+  const emails = new Set();
+  involvedKeys.forEach(k=>{
+    const p = PEOPLE.find(x=>x.key===k);
+    if (p?.email) emails.add(p.email);
+  });
+  return [...emails];
+}
 
 /* Subscriptions */
-let unsubTasks = null;
-let unsubLinks = null;
-let unsubNotes = null;
+let unsubTasks = null, unsubLinks = null, unsubNotes = null, unsubConfig = null;
+
+function startConfigWatch(){
+  if (unsubConfig) unsubConfig();
+  unsubConfig = onSnapshot(configRef, (snap)=>{
+    const ph = snap.data()?.pinHash || null;
+    if (ph && ph !== remotePinHash){
+      remotePinHash = ph;
+      const cached = localStorage.getItem(LS_PINHASH);
+      if (isUnlocked && (!cached || cached !== remotePinHash)){
+        lock();
+      }
+    } else {
+      remotePinHash = ph;
+    }
+  });
+}
 
 function startSubscriptions(){
   if (unsubTasks) unsubTasks();
@@ -1074,12 +409,471 @@ function startSubscriptions(){
   });
 }
 
-function stopSubscriptions(){
-  if (unsubTasks) unsubTasks();
-  if (unsubLinks) unsubLinks();
-  if (unsubNotes) unsubNotes();
-  unsubTasks = unsubLinks = unsubNotes = null;
+/* Tasks rendering */
+function initials(name){
+  const parts = String(name||"").trim().split(/\s+/).filter(Boolean);
+  const a = parts[0]?.[0] || "?";
+  const b = parts[1]?.[0] || "";
+  return (a+b).toUpperCase();
 }
+
+function isTaskMine(t){
+  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
+  return me && involved.includes(me.key);
+}
+
+function doneMap(t){
+  return t.doneBy || {};
+}
+
+function isFullyDone(t){
+  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
+  if (involved.length === 0) return false;
+  const d = doneMap(t);
+  return involved.every(k => d[k] === true);
+}
+
+function progressChips(t){
+  const involved = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
+  const d = doneMap(t);
+  if (involved.length === 0) return `<span class="badge badge--todo">No assignees</span>`;
+  return involved.map(k=>{
+    const p = PEOPLE.find(x=>x.key===k);
+    const done = d[k] === true;
+    const isMe = me && me.key === k;
+    const cls = `pip ${done ? "pip--done":""} ${isMe ? "pip--me":""}`;
+    return `<span class="${cls}" title="${escapeHtml(p?.name||k)}"><span class="pip__dot"></span>${escapeHtml(initials(p?.name||k))}</span>`;
+  }).join("");
+}
+
+function assignedBadges(t){
+  // display original selection (names/teams/all). not editable after create.
+  const targets = Array.isArray(t.assignTargets) ? t.assignTargets : [];
+  if (targets.length === 0){
+    // fallback: infer from involvedPeople
+    const inv = Array.isArray(t.involvedPeople) ? t.involvedPeople : [];
+    return `<span class="badge badge--todo">${inv.length} people</span>`;
+  }
+  return targets.map(label=>{
+    const isAll = label === "All";
+    const isTeam = label.endsWith("Team");
+    const isMeName = me && label === me.name;
+    const cls = `badge ${isAll?"badge--all":""} ${isTeam?"badge--team":""} ${isMeName?"badge--me":""}`;
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  }).join("");
+}
+
+function renderTasks(){
+  const q = (searchQ || "").trim().toLowerCase();
+  let list = [...tasks];
+
+  if (q){
+    list = list.filter(t=>{
+      const blob = `${t.desc||""} ${t.notes||""} ${(t.assignTargets||[]).join(" ")} ${(t.involvedPeople||[]).join(" ")}`.toLowerCase();
+      return blob.includes(q);
+    });
+  }
+
+  tasksEmpty.hidden = list.length !== 0;
+
+  tasksBody.innerHTML = list.map(t=>{
+    const mine = isTaskMine(t);
+    const fully = isFullyDone(t);
+    const rowCls = `${mine ? "taskRow--mine":""} ${fully ? "taskRow--done":""}`;
+    const due = escapeHtml(t.due || "");
+    const desc = escapeHtml(t.desc || "");
+    const notes = escapeHtml(t.notes || "");
+
+    // My done checkbox ONLY for involved people
+    let myCell = `<div class="muted2">—</div>`;
+    if (mine){
+      const d = doneMap(t);
+      const checked = d[me.key] === true ? "checked" : "";
+      myCell = `
+        <label class="myCheck">
+          <input type="checkbox" class="myDone" data-id="${t.id}" ${checked} />
+          <span class="muted2">My done</span>
+        </label>
+      `;
+    }
+
+    const doneBadge = fully
+        ? `<span class="badge badge--done">Fully done</span>`
+        : `<span class="badge badge--todo">In progress</span>`;
+
+    return `
+      <tr data-id="${t.id}" class="${rowCls}">
+        <td class="checkCell">${myCell}</td>
+        <td><input class="cellInput taskEdit" data-field="desc" value="${desc}" placeholder="Task…" /></td>
+        <td><div class="assignChips">${assignedBadges(t)}</div></td>
+        <td>
+          <div class="progress">${progressChips(t)}</div>
+          <div style="margin-top:8px">${doneBadge}</div>
+        </td>
+        <td><input class="cellInput taskEdit" data-field="due" type="date" value="${due}" /></td>
+        <td><input class="cellInput taskEdit" data-field="notes" value="${notes}" placeholder="Notes…" /></td>
+        <td class="th--right">
+          <div class="actionsRight">
+            <button class="smallBtn danger" data-act="del">Delete</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function renderStats(){
+  statTasks.textContent = String(tasks.length);
+  const mine = me ? tasks.filter(isTaskMine).length : 0;
+  statMine.textContent = String(mine);
+  const open = tasks.filter(t => !isFullyDone(t)).length;
+  statOpen.textContent = String(open);
+}
+
+/* Task editing (desc/due/notes only; assignments locked) */
+let patchTimer = null;
+let pendingPatch = null;
+
+function scheduleTaskPatch(id, patch){
+  pendingPatch = { id, patch: { ...pendingPatch?.patch, ...patch } };
+  if (patchTimer) clearTimeout(patchTimer);
+  patchTimer = setTimeout(async ()=>{
+    if (!pendingPatch) return;
+    const { id:tid, patch:pp } = pendingPatch;
+    pendingPatch = null;
+    try{
+      pp.updatedAt = serverTimestamp();
+      await updateDoc(doc(db, "tasks", tid), pp);
+    }catch(err){
+      console.error(err);
+    }
+  }, 350);
+}
+
+tasksBody.addEventListener("input", (e)=>{
+  const inp = e.target.closest(".taskEdit");
+  if (!inp) return;
+  const row = e.target.closest("tr[data-id]");
+  if (!row) return;
+  const id = row.dataset.id;
+  const field = inp.dataset.field;
+  if (!field) return;
+  scheduleTaskPatch(id, { [field]: inp.value });
+});
+
+/* My done checkbox (ONLY your own) */
+tasksBody.addEventListener("change", async (e)=>{
+  const cb = e.target.closest(".myDone");
+  if (!cb) return;
+  const id = cb.dataset.id;
+  if (!me) return;
+
+  // Confirm you’re actually involved (defensive)
+  const t = tasks.find(x=>x.id===id);
+  if (!t || !isTaskMine(t)){
+    cb.checked = false;
+    return;
+  }
+
+  const checked = cb.checked === true;
+  try{
+    const key = me.key; // safe (no dots)
+    const fieldPath = `doneBy.${key}`;
+    await updateDoc(doc(db,"tasks", id), {
+      [fieldPath]: checked,
+      updatedAt: serverTimestamp()
+    });
+  }catch(err){
+    console.error(err);
+    cb.checked = !checked;
+  }
+});
+
+/* Delete (available for everyone) */
+tasksBody.addEventListener("click", async (e)=>{
+  const btn = e.target.closest("[data-act='del']");
+  if (!btn) return;
+  const row = e.target.closest("tr[data-id]");
+  if (!row) return;
+  const id = row.dataset.id;
+
+  if (!confirm("Delete this task?")) return;
+
+  try{
+    await deleteDoc(doc(db,"tasks", id));
+  }catch(err){
+    console.error(err);
+    alert("Delete failed. Check Firestore rules.");
+  }
+});
+
+searchBox.addEventListener("input", ()=>{
+  searchQ = searchBox.value || "";
+  renderTasks();
+});
+
+/* New task */
+$("#newTaskBtn").addEventListener("click", ()=>{
+  selectedAssign = new Set(); // reset
+  updateAssignSummary();
+  assignMenu.hidden = true;
+  assignPicker.setAttribute("aria-expanded","false");
+
+  taskDesc.value = "";
+  taskDue.value = "";
+  taskPriority.value = "med";
+  taskNotes.value = "";
+
+  taskDialog.showModal();
+  setTimeout(()=> taskDesc.focus(), 40);
+});
+
+taskDialog.addEventListener("close", async ()=>{
+  if (taskDialog.returnValue !== "ok") return;
+
+  const assignSet = new Set(selectedAssign);
+  if (assignSet.size === 0){
+    alert("Pick at least one assignee (person/team/all).");
+    return;
+  }
+
+  const involvedPeople = computeInvolvedPeople(assignSet);
+  const assignTargets = ASSIGN_OPTIONS
+      .filter(o=>assignSet.has(o.id))
+      .map(o=>o.label);
+
+  const payload = {
+    desc: taskDesc.value.trim() || "Lorem ipsum",
+    due: taskDue.value || "",
+    priority: taskPriority.value || "med",
+    notes: taskNotes.value.trim() || "",
+    assignTargets,
+    involvedPeople,
+    doneBy: {}, // map of personKey -> boolean
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+
+  try{
+    const ref = await addDoc(tasksCol, payload);
+
+    // Email involved people (server-side)
+    const recipients = computeRecipients(involvedPeople);
+    await sendTaskEmail({
+      id: ref.id,
+      ...payload,
+      due: payload.due || "",
+      recipients
+    });
+  }catch(err){
+    console.error(err);
+    alert("Task create failed. Check Firestore rules / Netlify function.");
+  }
+});
+
+/* Email function call */
+async function sendTaskEmail(task){
+  // If function not deployed, don’t block the app.
+  try{
+    const recipients = task.recipients || [];
+    const res = await fetch("/.netlify/functions/sendTaskEmail", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        task: {
+          desc: task.desc,
+          due: task.due,
+          priority: task.priority,
+          notes: task.notes,
+          assignTargets: task.assignTargets || [],
+          involvedPeople: task.involvedPeople || [],
+          id: task.id
+        },
+        recipients
+      })
+    });
+    if (!res.ok){
+      const txt = await res.text().catch(()=> "");
+      console.warn("Email function failed:", res.status, txt);
+    }
+  }catch(e){
+    console.warn("Email skipped:", e);
+  }
+}
+
+/* Notes (debounced) */
+let notesTimer = null;
+notesBox.addEventListener("input", ()=>{
+  notesStatus.textContent = "Typing…";
+  if (notesTimer) clearTimeout(notesTimer);
+  notesTimer = setTimeout(async ()=>{
+    try{
+      await updateDoc(notesRef, { text: notesBox.value, updatedAt: serverTimestamp() });
+      notesStatus.textContent = "Saved";
+    }catch(err){
+      console.error(err);
+      notesStatus.textContent = "Save failed";
+    }
+  }, 450);
+});
+
+/* Links (simple CRUD) */
+let editingLinkId = null;
+function linkCardHTML(l){
+  const title = escapeHtml(l.title || "Lorem ipsum");
+  const desc = escapeHtml(l.desc || "Lorem ipsum");
+  const url = escapeHtml(l.url || "#");
+  return `
+    <div class="linkCard" data-id="${l.id}">
+      <div class="linkCard__top">
+        <div>
+          <div class="linkCard__title">${title}</div>
+          <div class="linkCard__url">${url}</div>
+        </div>
+        <div class="linkCard__actions">
+          <button class="linkCard__btn" data-act="edit" title="Edit">
+            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0 0-2.1L15.6 4.5a1.5 1.5 0 0 0-2.1 0L3 15v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="linkCard__btn" data-act="del" title="Delete">
+            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 7l1-2h10l1 2v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="linkCard__desc">${desc}</div>
+      <a class="linkCard__open" href="${url}" target="_blank" rel="noopener">Open ↗</a>
+    </div>
+  `;
+}
+function renderLinks(){
+  linksGrid.innerHTML = links.map(linkCardHTML).join("") || `<div class="empty">No links yet.</div>`;
+}
+
+newLinkBtn.addEventListener("click", ()=>{
+  editingLinkId = null;
+  linkTitle.value = "";
+  linkUrl.value = "";
+  linkDesc.value = "";
+  linkDialog.showModal();
+});
+linkDialog.addEventListener("close", async ()=>{
+  if (linkDialog.returnValue !== "ok") return;
+  const data = {
+    title: linkTitle.value.trim() || "Lorem ipsum",
+    url: linkUrl.value.trim() || "#",
+    desc: linkDesc.value.trim() || "Lorem ipsum"
+  };
+  try{
+    if (editingLinkId){
+      await updateDoc(doc(db,"links", editingLinkId), { ...data, updatedAt: serverTimestamp() });
+    }else{
+      const maxOrder = links.reduce((m,l)=> Math.max(m, Number(l.order||0)), 0);
+      await addDoc(linksCol, { ...data, order: (maxOrder+100), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    }
+  }catch(err){ console.error(err); }
+});
+
+linksGrid.addEventListener("click", async (e)=>{
+  const card = e.target.closest(".linkCard");
+  if (!card) return;
+  const id = card.dataset.id;
+  const act = e.target.closest("[data-act]")?.dataset?.act;
+  if (!act) return;
+  const l = links.find(x=>x.id===id);
+  if (act === "edit" && l){
+    editingLinkId = id;
+    linkTitle.value = l.title || "";
+    linkUrl.value = l.url || "";
+    linkDesc.value = l.desc || "";
+    linkDialog.showModal();
+  }
+  if (act === "del"){
+    if (!confirm("Delete this link?")) return;
+    try{ await deleteDoc(doc(db,"links", id)); }catch(err){ console.error(err); }
+  }
+});
+
+/* Export/Import */
+function download(filename, text){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type:"application/json"}));
+  a.download = filename;
+  a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 800);
+}
+function parseFSDate(x){
+  if (!x) return "";
+  if (typeof x === "string") return x;
+  if (x.seconds){
+    const d = new Date(x.seconds*1000);
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  }
+  return "";
+}
+exportBtn.addEventListener("click", ()=>{
+  const out = {
+    tasks: tasks.map(t=>({
+      desc:t.desc||"",
+      due: parseFSDate(t.due),
+      priority:t.priority||"med",
+      notes:t.notes||"",
+      assignTargets:t.assignTargets||[],
+      involvedPeople:t.involvedPeople||[],
+      doneBy:t.doneBy||{}
+    })),
+    links: links.map(l=>({title:l.title||"",url:l.url||"",desc:l.desc||"",order:Number(l.order||0)})),
+    notes: notesBox.value || ""
+  };
+  download(`siliconhall-export-${Date.now()}.json`, JSON.stringify(out,null,2));
+});
+importFile.addEventListener("change", async ()=>{
+  const f = importFile.files?.[0];
+  if (!f) return;
+  try{
+    const obj = JSON.parse(await f.text());
+    if (!confirm("Import will replace current tasks/links/notes. Continue?")) return;
+
+    const batch = writeBatch(db);
+    for (const t of tasks) batch.delete(doc(db,"tasks", t.id));
+    for (const l of links) batch.delete(doc(db,"links", l.id));
+    batch.set(notesRef, { text: String(obj.notes||""), updatedAt: serverTimestamp() }, { merge:true });
+
+    (obj.links || []).forEach((l, idx)=>{
+      const ref = doc(collection(db,"links"));
+      batch.set(ref, {
+        title: String(l.title||"Lorem ipsum"),
+        url: String(l.url||"#"),
+        desc: String(l.desc||"Lorem ipsum"),
+        order: Number.isFinite(Number(l.order)) ? Number(l.order) : idx*100,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    });
+
+    (obj.tasks || []).forEach((t)=>{
+      const ref = doc(collection(db,"tasks"));
+      batch.set(ref, {
+        desc: String(t.desc||"Lorem ipsum"),
+        due: String(t.due||""),
+        priority: String(t.priority||"med"),
+        notes: String(t.notes||""),
+        assignTargets: Array.isArray(t.assignTargets) ? t.assignTargets : [],
+        involvedPeople: Array.isArray(t.involvedPeople) ? t.involvedPeople : [],
+        doneBy: (t.doneBy && typeof t.doneBy === "object") ? t.doneBy : {},
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    });
+
+    await batch.commit();
+  }catch(err){
+    console.error(err);
+    alert("Import failed. Bad JSON?");
+  }finally{
+    importFile.value = "";
+  }
+});
 
 /* Init */
 (async function init(){
@@ -1099,8 +893,9 @@ function stopSubscriptions(){
       return;
     }
 
-    // identity
     await ensureIdentity();
+    // If identity was missing, dialog opens; we’ll still set a default once chosen.
+    // If cached, me is already set and we can subscribe now.
     if (!me){
       // Wait for dialog to close with selection
       const wait = () => new Promise(res=>{
