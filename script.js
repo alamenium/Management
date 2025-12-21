@@ -30,7 +30,7 @@ try { getAnalytics(app); } catch { /* analytics optional */ }
 const db = getFirestore(app);
 
 /* Defaults */
-const DEFAULT_PIN = "1234"; // first run only; change later by editing meta/config.pinHash
+const DEFAULT_PIN = "0750"; // first run only; change later by editing meta/config.pinHash
 const LS_THEME = "teamhub_theme_v2";
 const LS_PINHASH = "teamhub_pin_hash_v2";
 
