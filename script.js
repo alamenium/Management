@@ -1,1046 +1,888 @@
-// Team Hub — Firebase edition (no Netlify functions, no localStorage data)
-// - Data stored in Firestore: links, tasks, shared notes, config(pinHash)
-// - PIN cached (hash) locally; re-prompt only if Firestore pinHash changes
-// - Theme cached locally
-//
-// NOTE: Firestore security rules must allow your team to read/write.
-// If you see "permission-denied", update rules in Firebase console.
+// Team Hub — Netlify Functions edition
+// - Auth via PIN -> token (cached in localStorage)
+// - Storage via Netlify Blobs (through /.netlify/functions/api)
+// - Who-am-I picker (cached) + per-user task completion
+// - Multi-assignee targets (multiple people + teams + All)
+// - Email on new task creation (/.netlify/functions/sendTaskEmail)
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js";
-import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-analytics.js";
-import {
-  getFirestore, doc, getDoc, setDoc, updateDoc,
-  collection, addDoc, deleteDoc, onSnapshot,
-  query, orderBy, serverTimestamp, writeBatch, deleteField
-} from "https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js";
+(() => {
+  const API_BASE = "/.netlify/functions/api";
+  const EMAIL_FN = "/.netlify/functions/sendTaskEmail";
 
-/* Firebase config (hardcoded) */
-const firebaseConfig = {
-  apiKey: "AIzaSyDGcdvcNW-zJTeMBozHaBET81IA3LmYdlE",
-  authDomain: "capstone-management-eb363.firebaseapp.com",
-  projectId: "capstone-management-eb363",
-  storageBucket: "capstone-management-eb363.firebasestorage.app",
-  messagingSenderId: "859371424164",
-  appId: "1:859371424164:web:24861b1adfcb31f5621931",
-  measurementId: "G-DK1TCKMCVZ"
-};
+  // Local keys
+  const LS_TOKEN = "teamhub_token_v1";
+  const LS_PINHASH = "teamhub_pinhash_v1";
+  const LS_THEME = "teamhub_theme_v2";
+  const LS_WHO = "teamhub_who_v1";
 
-const app = initializeApp(firebaseConfig);
-try { getAnalytics(app); } catch { /* analytics optional */ }
-const db = getFirestore(app);
+  const MEMBERS = [
+    { id: "Youssef Elkhayat", team: "CAD Team", email: "youssifayman2004@gmail.com" },
+    { id: "Youssef Roshdy", team: "Prototype Team", email: "yousufdiaa2004@gmail.com" },
+    { id: "Mohamed AlAiniah", team: "CAD Team", email: "Mohammad.bashar033@gmail.com" },
+    { id: "Ahmed Saeed", team: "Prototype Team", email: "saeedahmedsuper@gmail.com" },
+    { id: "Mohamed ElMansy", team: "CAD Team", email: "mohammadadham20@gmail.com" },
+  ];
 
-/* Defaults */
-const DEFAULT_PIN = "0750"; // first run only; change later by editing meta/config.pinHash
-const LS_THEME = "teamhub_theme_v2";
-const LS_PINHASH = "teamhub_pin_hash_v2";
+  const TEAM_MEMBERS = {
+    "CAD Team": MEMBERS.filter(m => m.team === "CAD Team").map(m => m.id),
+    "Prototype Team": MEMBERS.filter(m => m.team === "Prototype Team").map(m => m.id),
+  };
 
-const LS_WHO = "teamhub_who_v1";
+  const ALL_MEMBER_IDS = MEMBERS.map(m => m.id);
+  const MEMBER_BY_ID = Object.fromEntries(MEMBERS.map(m => [m.id, m]));
+  const TEAMS = ["CAD Team", "Prototype Team"];
+  const TARGETS = [...ALL_MEMBER_IDS, ...TEAMS, "All"];
 
-// Hardcoded members (used for "Who are you?", task assignment, and emailing)
-const MEMBERS = [
-  { id:"youssef_elkhayat", name:"Youssef Elkhayat", team:"CAD Team", email:"youssifayman2004@gmail.com" },
-  { id:"youssef_roshdy", name:"Youssef Roshdy", team:"Prototype Team", email:"yousufdiaa2004@gmail.com" },
-  { id:"mohamed_alainiah", name:"Mohamed AlAiniah", team:"CAD Team", email:"Mohammad.bashar033@gmail.com" },
-  { id:"ahmed_saeed", name:"Ahmed Saeed", team:"Prototype Team", email:"saeedahmedsuper@gmail.com" },
-  { id:"mohamed_elmansy", name:"Mohamed ElMansy", team:"CAD Team", email:"mohammadadham20@gmail.com" },
-];
-const MEMBER_BY_ID = Object.fromEntries(MEMBERS.map(m => [m.id, m]));
-const CAD_IDS = MEMBERS.filter(m=>m.team==="CAD Team").map(m=>m.id);
-const PROTO_IDS = MEMBERS.filter(m=>m.team==="Prototype Team").map(m=>m.id);
-const ALL_IDS = MEMBERS.map(m=>m.id);
+  // DOM helpers
+  const $ = (q, el = document) => el.querySelector(q);
+  const $$ = (q, el = document) => [...el.querySelectorAll(q)];
 
-function resolveAssignment(key){
-  // key examples: "user:youssef_elkhayat" | "team:cad" | "team:prototype" | "all"
-  if (!key) return { key:"", label:"", targets:[] };
-  if (key === "all") return { key, label:"All", targets:[...ALL_IDS] };
-  if (key.startsWith("team:cad")) return { key:"team:cad", label:"CAD Team", targets:[...CAD_IDS] };
-  if (key.startsWith("team:prototype")) return { key:"team:prototype", label:"Prototype Team", targets:[...PROTO_IDS] };
-  if (key.startsWith("user:")){
-    const id = key.slice("user:".length);
-    const m = MEMBER_BY_ID[id];
-    return m ? { key:`user:${id}`, label:m.name, targets:[id] } : { key, label:"", targets:[] };
+  const escapeHtml = (s) =>
+    String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+
+  const uid = () => (crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+  // UI refs
+  const authOverlay = $("#authOverlay");
+  const authForm = $("#authForm");
+  const pinInput = $("#pinInput");
+  const pinClearBtn = $("#pinClearBtn");
+  const authMsg = $("#authMsg");
+  const authFooterText = $("#authFooterText");
+
+  const whoOverlay = $("#whoOverlay");
+  const whoList = $("#whoList");
+  const whoBtn = $("#whoBtn");
+  const whoLabel = $("#whoLabel");
+
+  const themeToggle = $("#themeToggle");
+  const themeLabel = $("#themeLabel");
+  const logoutBtn = $("#logoutBtn");
+
+  const globalSearch = $("#globalSearch");
+
+  const statLinks = $("#statLinks");
+  const statTasks = $("#statTasks");
+  const statOpen = $("#statOpen");
+
+  const linksGrid = $("#linksGrid");
+  const newLinkBtn = $("#newLinkBtn");
+  const linkDialog = $("#linkDialog");
+  const linkDialogTitle = $("#linkDialogTitle");
+  const linkTitle = $("#linkTitle");
+  const linkUrl = $("#linkUrl");
+  const linkDesc = $("#linkDesc");
+  const linkSaveBtn = $("#linkSaveBtn");
+
+  const newTaskBtn = $("#newTaskBtn");
+  const taskDialog = $("#taskDialog");
+  const taskDialogTitle = $("#taskDialogTitle");
+  const taskDesc = $("#taskDesc");
+  const taskAssignees = $("#taskAssignees");
+  const taskDue = $("#taskDue");
+  const taskPriority = $("#taskPriority");
+  const taskNotes = $("#taskNotes");
+  const taskSaveBtn = $("#taskSaveBtn");
+
+  const filterStatus = $("#filterStatus");
+  const filterPriority = $("#filterPriority");
+  const sortTasks = $("#sortTasks");
+  const tasksBody = $("#tasksBody");
+  const tasksEmpty = $("#tasksEmpty");
+  const taskCount = $("#taskCount");
+
+  const notesBox = $("#notesBox");
+  const notesStatus = $("#notesStatus");
+
+  const exportBtn = $("#exportBtn");
+  const importFile = $("#importFile");
+
+  // State
+  let token = localStorage.getItem(LS_TOKEN) || "";
+  let pinHash = localStorage.getItem(LS_PINHASH) || "";
+  let me = localStorage.getItem(LS_WHO) || "";
+
+  let state = {
+    version: 1,
+    workspaceName: "Team Hub",
+    notes: "",
+    links: [],
+    tasks: [],
+  };
+
+  let searchQuery = "";
+  let showLinkEditId = null;
+  let showTaskEditId = null;
+
+  // ---------------------------
+  // Theme
+  // ---------------------------
+  function applyTheme(t) {
+    document.documentElement.dataset.theme = t;
+    themeLabel.textContent = t === "light" ? "Light" : "Dark";
   }
-  return { key, label:key, targets:[] };
-}
-
-let currentUserId = localStorage.getItem(LS_WHO) || "";
-if (currentUserId && MEMBER_BY_ID[currentUserId]) { whoLabel.textContent = MEMBER_BY_ID[currentUserId].name; }
-function setCurrentUser(id){
-  currentUserId = id;
-  localStorage.setItem(LS_WHO, id);
-  const m = MEMBER_BY_ID[id];
-  whoLabel.textContent = m ? m.name : "Select user";
-  renderTasks();
-}
-function openWhoOverlay(){
-  // build buttons (fresh each time in case we change the list)
-  whoList.innerHTML = MEMBERS.map(m => {
-    const initials = m.name.split(" ").map(x=>x[0]).slice(0,2).join("").toUpperCase();
-    const active = m.id === currentUserId ? " isActive" : "";
-    return `
-      <button class="whoCard${active}" type="button" data-who="${m.id}">
-        <div class="whoAvatar">${initials}</div>
-        <div class="whoMeta">
-          <div class="whoName">${escapeHtml(m.name)}</div>
-          <div class="whoTeam">${escapeHtml(m.team)}</div>
-        </div>
-      </button>
-    `;
-  }).join("");
-  whoOverlay.hidden = false;
-  setTimeout(()=> whoList.querySelector("button")?.focus(), 30);
-}
-function closeWhoOverlay(){ whoOverlay.hidden = true; }
-async function ensureWhoSelected(){
-  if (currentUserId && MEMBER_BY_ID[currentUserId]){
-    whoLabel.textContent = MEMBER_BY_ID[currentUserId].name;
-    return;
+  function loadTheme() {
+    applyTheme(localStorage.getItem(LS_THEME) || "dark");
   }
-  openWhoOverlay();
-}
-
-
-/* Helpers */
-const $ = (q, el=document) => el.querySelector(q);
-const $$ = (q, el=document) => [...el.querySelectorAll(q)];
-const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-
-function nowISODate(){
-  const d = new Date();
-  const mm = String(d.getMonth()+1).padStart(2,"0");
-  const dd = String(d.getDate()).padStart(2,"0");
-  return `${d.getFullYear()}-${mm}-${dd}`;
-}
-function escapeHtml(s){
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-async function sha256Hex(text){
-  const enc = new TextEncoder().encode(String(text));
-  const buf = await crypto.subtle.digest("SHA-256", enc);
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,"0")).join("");
-}
-// Dev helper: compute SHA-256 hex (useful if you want to update meta/config.pinHash)
-window.teamhubSha256 = sha256Hex;
-
-
-/* Firestore refs */
-const configRef = doc(db, "meta", "config");
-const notesRef = doc(db, "notes", "shared");
-const linksCol = collection(db, "links");
-const tasksCol = collection(db, "tasks");
-
-/* UI refs */
-const authOverlay = $("#authOverlay");
-const authForm = $("#authForm");
-const pinInput = $("#pinInput");
-const pinClearBtn = $("#pinClearBtn");
-const authMsg = $("#authMsg");
-
-const whoOverlay = $("#whoOverlay");
-const whoList = $("#whoList");
-const whoBtn = $("#whoBtn");
-const whoLabel = $("#whoLabel");
-const authFooterText = $("#authFooterText");
-
-const themeToggle = $("#themeToggle");
-const themeLabel = $("#themeLabel");
-const logoutBtn = $("#logoutBtn");
-
-const globalSearch = $("#globalSearch");
-
-const statLinks = $("#statLinks");
-const statTasks = $("#statTasks");
-const statOpen = $("#statOpen");
-
-const linksGrid = $("#linksGrid");
-const newLinkBtn = $("#newLinkBtn");
-const linkDialog = $("#linkDialog");
-const linkForm = $("#linkForm");
-const linkDialogTitle = $("#linkDialogTitle");
-const linkTitle = $("#linkTitle");
-const linkUrl = $("#linkUrl");
-const linkDesc = $("#linkDesc");
-const linkSaveBtn = $("#linkSaveBtn");
-
-const newTaskBtn = $("#newTaskBtn");
-const taskDialog = $("#taskDialog");
-const taskForm = $("#taskForm");
-const taskDialogTitle = $("#taskDialogTitle");
-const taskDesc = $("#taskDesc");
-const taskAssigned = $("#taskAssigned");
-const taskPriority = $("#taskPriority");
-const taskDue = $("#taskDue");
-const taskNotes = $("#taskNotes");
-const taskCreateBtn = $("#taskCreateBtn");
-
-const filterStatus = $("#filterStatus");
-const filterPriority = $("#filterPriority");
-const sortTasks = $("#sortTasks");
-const tasksBody = $("#tasksBody");
-const tasksEmpty = $("#tasksEmpty");
-const taskCount = $("#taskCount");
-
-const notesBox = $("#notesBox");
-const notesStatus = $("#notesStatus");
-
-const exportBtn = $("#exportBtn");
-const importFile = $("#importFile");
-
-/* Local state (in-memory only) */
-let remotePinHash = null;
-let links = []; // {id, title, url, desc, order, updatedAt}
-let tasks = []; // {id, ...}
-let notesText = "";
-let isUnlocked = false;
-let dragId = null;
-let searchQuery = "";
-
-/* Theme */
-function applyTheme(theme){
-  document.documentElement.dataset.theme = theme;
-  themeLabel.textContent = theme === "light" ? "Light" : "Dark";
-}
-function loadTheme(){
-  const t = localStorage.getItem(LS_THEME) || "dark";
-  applyTheme(t);
-}
-function toggleTheme(){
-  const cur = document.documentElement.dataset.theme || "dark";
-  const next = cur === "dark" ? "light" : "dark";
-  localStorage.setItem(LS_THEME, next);
-  applyTheme(next);
-}
-
-/* Bootstrap Firestore docs (clean slate) */
-async function ensureBootstrap(){
-  const cfgSnap = await getDoc(configRef);
-  if (!cfgSnap.exists()){
-    const pinHash = await sha256Hex(DEFAULT_PIN);
-    await setDoc(configRef, {
-      pinHash,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      version: 1
-    });
+  function toggleTheme() {
+    const cur = document.documentElement.dataset.theme || "dark";
+    const next = cur === "dark" ? "light" : "dark";
+    localStorage.setItem(LS_THEME, next);
+    applyTheme(next);
   }
 
-  const notesSnap = await getDoc(notesRef);
-  if (!notesSnap.exists()){
-    await setDoc(notesRef, {
-      text: "",
-      updatedAt: serverTimestamp()
-    });
+  // ---------------------------
+  // Auth overlay helpers
+  // ---------------------------
+  function setAuthFooter(t) {
+    authFooterText.textContent = t;
   }
-}
+  function showAuth(msg = "") {
+    authOverlay.hidden = false;
+    authMsg.textContent = msg;
+    setTimeout(() => pinInput?.focus(), 30);
+  }
+  function hideAuth() {
+    authOverlay.hidden = true;
+    authMsg.textContent = "";
+  }
+  function lock(msg = "Locked. Enter PIN to continue.") {
+    token = "";
+    localStorage.removeItem(LS_TOKEN);
+    showAuth(msg);
+  }
 
-/* Auth */
-function showAuth(msg=""){
-  authOverlay.hidden = false;
-  authMsg.textContent = msg;
-  setTimeout(()=> pinInput?.focus(), 50);
-}
-function hideAuth(){
-  authOverlay.hidden = true;
-  authMsg.textContent = "";
-}
-function setAuthFooter(s){ authFooterText.textContent = s; }
-
-async function fetchRemotePinHash(){
-  const snap = await getDoc(configRef);
-  remotePinHash = snap.data()?.pinHash || null;
-  return remotePinHash;
-}
-function startConfigWatch(){
-  if (unsubConfig) unsubConfig();
-
-  unsubConfig = onSnapshot(configRef, (snap)=>{
-    const ph = snap.data()?.pinHash || null;
-    if (ph && ph !== remotePinHash){
-      remotePinHash = ph;
-      const cached = localStorage.getItem(LS_PINHASH);
-
-      // If PIN changed while unlocked or cached, require re-entry.
-      if (isUnlocked && (!cached || cached !== remotePinHash)){
-        lock();
-      }
-    } else {
-      remotePinHash = ph;
+  async function apiFetch(path, opts = {}) {
+    const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(API_BASE + path, { ...opts, headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data?.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
     }
-  });
-}
-
-
-
-async function tryAutoUnlock(){
-  const cached = localStorage.getItem(LS_PINHASH);
-  if (cached && remotePinHash && cached === remotePinHash){
-    isUnlocked = true;
-    hideAuth();
-    await ensureWhoSelected();
-    return true;
+    return data;
   }
-  return false;
-}
 
-async function unlockWithPin(pin){
-  const hash = await sha256Hex(pin);
-  if (!remotePinHash){
-    await fetchRemotePinHash();
+  async function getServerPinHash() {
+    // Public endpoint (no token)
+    const res = await fetch(API_BASE + "/pinhash");
+    const data = await res.json().catch(() => ({}));
+    return data?.pinhash || "";
   }
-  if (hash && remotePinHash && hash === remotePinHash){
-    localStorage.setItem(LS_PINHASH, remotePinHash);
-    isUnlocked = true;
-    hideAuth();
-    await ensureWhoSelected();
-    return true;
+
+  async function loginWithPin(pin) {
+    const data = await apiFetch("/login", { method: "POST", body: JSON.stringify({ pin }) });
+    token = data.token || "";
+    if (!token) throw new Error("Login failed");
+    localStorage.setItem(LS_TOKEN, token);
+
+    // refresh pinHash from server (so we can detect changes later)
+    const ph = await getServerPinHash();
+    pinHash = ph || "";
+    if (pinHash) localStorage.setItem(LS_PINHASH, pinHash);
   }
-  return false;
-}
 
-function lock(){
-  isUnlocked = false;
-  localStorage.removeItem(LS_PINHASH);
-  showAuth("Locked. Enter PIN to continue.");
-}
+  // ---------------------------
+  // Who picker
+  // ---------------------------
+  function renderWhoList() {
+    whoList.innerHTML = MEMBERS.map((m) => {
+      return `
+        <button class="btn btn--ghost whoBtn" type="button" data-who="${escapeHtml(m.id)}">
+          <span class="whoBtn__left">
+            <span class="whoBtn__name">${escapeHtml(m.id)}</span>
+            <span class="whoBtn__team">${escapeHtml(m.team)}</span>
+          </span>
+          <span class="whoBtn__tag">${escapeHtml(m.team)}</span>
+        </button>
+      `;
+    }).join("");
+  }
 
-/* Realtime subscriptions */
-let unsubLinks = null;
-let unsubTasks = null;
-let unsubNotes = null;
-let unsubConfig = null;
+  function showWhoPicker() {
+    renderWhoList();
+    whoOverlay.hidden = false;
+  }
+  function hideWhoPicker() {
+    whoOverlay.hidden = true;
+  }
+  function setMe(next) {
+    me = next || "";
+    if (me) localStorage.setItem(LS_WHO, me);
+    whoLabel.textContent = me ? `${me} (${MEMBER_BY_ID[me]?.team || "—"})` : "Pick user";
+    renderTasks();
+  }
 
-function startSubscriptions(){
-  if (unsubLinks) unsubLinks();
-  if (unsubTasks) unsubTasks();
-  if (unsubNotes) unsubNotes();
+  // ---------------------------
+  // Targets / involvement / done
+  // ---------------------------
+  function normalizeTargets(arr) {
+    const raw = Array.isArray(arr) ? arr.filter(Boolean).map(String) : [];
+    const set = new Set();
+    for (const t of raw) {
+      if (TARGETS.includes(t)) set.add(t);
+    }
+    // If "All" exists, keep only "All"
+    if (set.has("All")) return ["All"];
+    return [...set];
+  }
 
-  // Config watcher is started once in init (keeps remotePinHash fresh)
-  unsubLinks = onSnapshot(query(linksCol, orderBy("order", "asc")), (snap)=>{
-    links = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+  function expandTargets(targets) {
+    const t = normalizeTargets(targets);
+    const out = new Set();
+    for (const x of t) {
+      if (x === "All") {
+        ALL_MEMBER_IDS.forEach((id) => out.add(id));
+      } else if (TEAM_MEMBERS[x]) {
+        TEAM_MEMBERS[x].forEach((id) => out.add(id));
+      } else if (MEMBER_BY_ID[x]) {
+        out.add(x);
+      }
+    }
+    return [...out];
+  }
+
+  function isInvolved(task, who) {
+    if (!who) return false;
+    const involved = expandTargets(task.targets || []);
+    return involved.includes(who);
+  }
+
+  function getProgress(task) {
+    const involved = expandTargets(task.targets || []);
+    const doneBy = task.doneBy && typeof task.doneBy === "object" ? task.doneBy : {};
+    const done = involved.filter((id) => doneBy[id]);
+    return { involved, done, total: involved.length, count: done.length, fullyDone: involved.length > 0 && done.length === involved.length };
+  }
+
+  // ---------------------------
+  // State save/load
+  // ---------------------------
+  let saveTimer = null;
+  function scheduleSave(label = "Saving…") {
+    notesStatus.textContent = label;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try {
+        const resp = await apiFetch("/state", { method: "POST", body: JSON.stringify({ state }) });
+        state = resp.state || state;
+        notesStatus.textContent = "Saved";
+        renderStats();
+      } catch (e) {
+        console.error(e);
+        notesStatus.textContent = "Save failed";
+        if (e.status === 401) lock("Session expired. Enter PIN again.");
+      }
+    }, 350);
+  }
+
+  async function loadState() {
+    const resp = await apiFetch("/state", { method: "GET" });
+    state = resp.state || state;
+
+    // Ensure shapes
+    state.links = Array.isArray(state.links) ? state.links : [];
+    state.tasks = Array.isArray(state.tasks) ? state.tasks : [];
+    state.notes = String(state.notes || "");
+
+    notesBox.value = state.notes;
     renderLinks();
-    renderStats();
-  });
-
-  unsubTasks = onSnapshot(query(tasksCol, orderBy("updatedAt", "desc")), (snap)=>{
-    tasks = snap.docs.map(d => ({ id:d.id, ...d.data() }));
     renderTasks();
     renderStats();
-  });
-
-  unsubNotes = onSnapshot(notesRef, (snap)=>{
-    const data = snap.data() || {};
-    notesText = String(data.text ?? "");
-    if (notesBox.value !== notesText) notesBox.value = notesText;
-    notesStatus.textContent = "Synced";
-  });
-}
-/* Render: stats */
-function renderStats(){
-  statLinks.textContent = String(links.length);
-  statTasks.textContent = String(tasks.length);
-  const open = tasks.filter(t => !isFullyDone(t)).length;
-  statOpen.textContent = String(open);
-}
-
-/* Links */
-function linkCardHTML(l){
-  const title = escapeHtml(l.title || "Lorem ipsum");
-  const desc = escapeHtml(l.desc || "Lorem ipsum");
-  const url = escapeHtml(l.url || "#");
-  return `
-    <div class="linkCard" draggable="true" data-id="${l.id}">
-      <div class="linkCard__top">
-        <div>
-          <div class="linkCard__title">${title}</div>
-          <div class="linkCard__url">${url}</div>
-        </div>
-        <div class="linkCard__actions">
-          <button class="linkCard__btn" data-act="edit" title="Edit">
-            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0 0-2.1L15.6 4.5a1.5 1.5 0 0 0-2.1 0L3 15v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-          </button>
-          <button class="linkCard__btn" data-act="del" title="Delete">
-            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 7l1-2h10l1 2v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
-      </div>
-      <div class="linkCard__desc">${desc}</div>
-      <a class="linkCard__open" href="${url}" target="_blank" rel="noopener">Open ↗</a>
-    </div>
-  `;
-}
-
-function renderLinks(){
-  const q = searchQuery.trim().toLowerCase();
-  const filtered = q
-    ? links.filter(l => {
-        const s = `${l.title||""} ${l.desc||""} ${l.url||""}`.toLowerCase();
-        return s.includes(q);
-      })
-    : links;
-
-  linksGrid.innerHTML = filtered.map(linkCardHTML).join("") || `<div class="empty">No links yet. Click <b>+ New link</b>.</div>`;
-}
-
-let editingLinkId = null;
-function openLinkDialog(mode, link=null){
-  editingLinkId = mode === "edit" ? link?.id : null;
-  linkDialogTitle.textContent = mode === "edit" ? "Edit link" : "New link";
-  linkSaveBtn.textContent = mode === "edit" ? "Save" : "Create";
-  linkTitle.value = link?.title || "";
-  linkUrl.value = link?.url || "";
-  linkDesc.value = link?.desc || "";
-  linkDialog.showModal();
-  setTimeout(()=> linkTitle.focus(), 30);
-}
-
-async function createLink(data){
-  const maxOrder = links.reduce((m,l)=> Math.max(m, Number(l.order||0)), 0);
-  const order = (isFinite(maxOrder) ? maxOrder : 0) + 100;
-  await addDoc(linksCol, {
-    title: data.title || "Lorem ipsum",
-    url: data.url || "#",
-    desc: data.desc || "Lorem ipsum",
-    order,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-}
-
-async function updateLink(id, data){
-  await updateDoc(doc(db, "links", id), {
-    title: data.title || "Lorem ipsum",
-    url: data.url || "#",
-    desc: data.desc || "Lorem ipsum",
-    updatedAt: serverTimestamp()
-  });
-}
-
-async function deleteLinkById(id){
-  await deleteDoc(doc(db, "links", id));
-}
-
-async function persistLinkOrder(idsInOrder){
-  const batch = writeBatch(db);
-  idsInOrder.forEach((id, idx)=>{
-    batch.update(doc(db,"links", id), { order: idx*100, updatedAt: serverTimestamp() });
-  });
-  await batch.commit();
-}
-
-/* Tasks */
-const PRIORITY_SCORE = { low:1, med:2, high:3 };
-function statusBadge(status){
-  const s = status || "todo";
-  const map = {
-    todo: { label:"To do", dot:"rgba(255,255,255,.35)" },
-    doing:{ label:"Doing", dot:"rgba(16,184,215,.65)" },
-    blocked:{ label:"Blocked", dot:"rgba(255,207,90,.7)" },
-    done:{ label:"Done", dot:"rgba(62,227,138,.7)" }
-  };
-  const it = map[s] || map.todo;
-  return `<span class="badge"><span class="dot" style="background:${it.dot};border-color:transparent"></span>${it.label}</span>`;
-}
-function priorityBadge(p){
-  const v = p || "med";
-  const map = {
-    low:{ label:"Low", dot:"rgba(255,255,255,.35)" },
-    med:{ label:"Medium", dot:"rgba(16,184,215,.55)" },
-    high:{ label:"High", dot:"rgba(255,91,107,.65)" }
-  };
-  const it = map[v] || map.med;
-  return `<span class="badge"><span class="dot" style="background:${it.dot};border-color:transparent"></span>${it.label}</span>`;
-}
-
-function parseFSDate(x){
-  // x can be string(YYYY-MM-DD) or Firestore Timestamp-like
-  if (!x) return null;
-  if (typeof x === "string") return x;
-  if (x.seconds) {
-    const d = new Date(x.seconds * 1000);
-    const mm = String(d.getMonth()+1).padStart(2,"0");
-    const dd = String(d.getDate()).padStart(2,"0");
-    return `${d.getFullYear()}-${mm}-${dd}`;
   }
-  return null;
-}
 
-/* Tasks */
-function guessAssignedKey(t){
-  if (t.assignedKey) return t.assignedKey;
-  // best-effort for older docs
-  const a = String(t.assignedLabel || t.assigned || "").trim();
-  const found = MEMBERS.find(m => m.name.toLowerCase() === a.toLowerCase());
-  if (found) return `user:${found.id}`;
-  if (a.toLowerCase() === "cad team") return "team:cad";
-  if (a.toLowerCase() === "prototype team") return "team:prototype";
-  if (a.toLowerCase() === "all") return "all";
-  return "";
-}
+  // ---------------------------
+  // Links
+  // ---------------------------
+  function linkCardHTML(l) {
+    return `
+      <div class="linkCard" draggable="true" data-id="${escapeHtml(l.id)}">
+        <div class="linkCard__top">
+          <div>
+            <div class="linkCard__title">${escapeHtml(l.title || "Lorem ipsum")}</div>
+            <div class="linkCard__url">${escapeHtml(l.url || "#")}</div>
+          </div>
+          <div class="linkCard__actions">
+            <button class="linkCard__btn" data-act="edit" title="Edit">
+              <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0 0-2.1L15.6 4.5a1.5 1.5 0 0 0-2.1 0L3 15v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="linkCard__btn" data-act="del" title="Delete">
+              <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 7l1-2h10l1 2v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="linkCard__desc">${escapeHtml(l.desc || "Lorem ipsum")}</div>
+        <a class="linkCard__open" href="${escapeHtml(l.url || "#")}" target="_blank" rel="noopener">Open ↗</a>
+      </div>
+    `;
+  }
 
-function getTargets(t){
-  if (Array.isArray(t.targets) && t.targets.length) return t.targets;
-  // migrate older docs: single assignee text -> try match
-  const key = guessAssignedKey(t);
-  return resolveAssignment(key).targets || [];
-}
+  function renderLinks() {
+    const q = searchQuery.trim().toLowerCase();
+    const list = (state.links || []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const filtered = q
+      ? list.filter((l) => `${l.title || ""} ${l.desc || ""} ${l.url || ""}`.toLowerCase().includes(q))
+      : list;
 
-function isFullyDone(t){
-  if (typeof t.fullyDone === "boolean") return t.fullyDone;
-  const targets = getTargets(t);
-  const doneBy = t.doneBy || {};
-  const doneCount = targets.filter(id => !!doneBy?.[id]).length;
-  return targets.length > 0 && doneCount === targets.length;
-}
+    linksGrid.innerHTML = filtered.length
+      ? filtered.map(linkCardHTML).join("")
+      : `<div class="empty">No links yet. Click <b>+ New link</b>.</div>`;
+  }
 
-function initials(name){
-  return String(name||"").split(" ").filter(Boolean).slice(0,2).map(s=>s[0]).join("").toUpperCase() || "?";
-}
+  function openLinkDialog(mode, link) {
+    showLinkEditId = mode === "edit" ? link?.id : null;
+    linkDialogTitle.textContent = mode === "edit" ? "Edit link" : "New link";
+    linkSaveBtn.textContent = mode === "edit" ? "Save" : "Create";
+    linkTitle.value = link?.title || "";
+    linkUrl.value = link?.url || "";
+    linkDesc.value = link?.desc || "";
+    linkDialog.showModal();
+    setTimeout(() => linkTitle.focus(), 30);
+  }
 
-function renderTasks(){
-  const statusVal = filterStatus.value || "all";
-  const prioVal = filterPriority.value || "all";
-  const s = (searchQuery || "").trim().toLowerCase();
+  // ---------------------------
+  // Tasks
+  // ---------------------------
+  const PRIORITY_SCORE = { low: 1, med: 2, high: 3 };
 
-  let list = tasks.slice();
-  list = list.filter(t=>{
-    const fully = isFullyDone(t);
-    if (statusVal === "open" && fully) return false;
-    if (statusVal === "done" && !fully) return false;
-    if (prioVal !== "all" && (t.priority || "med") !== prioVal) return false;
-    if (s){
-      const hay = [t.desc, t.assignedLabel, t.assigned, t.notes].join(" ").toLowerCase();
-      if (!hay.includes(s)) return false;
-    }
-    return true;
-  });
+  function chipsHTML(targets) {
+    const t = normalizeTargets(targets);
+    if (!t.length) return `<span class="chip">—</span>`;
+    return t
+      .map((x) => {
+        const cls = x === "All" ? "chip chip--all" : TEAM_MEMBERS[x] ? "chip chip--team" : "chip";
+        return `<span class="${cls}" title="${escapeHtml(x)}">${escapeHtml(x)}</span>`;
+      })
+      .join("");
+  }
 
-  list.sort((a,b)=>{
-    const mode = sortTasks.value || "recent";
-    if (mode === "due"){
-      const da = parseFSDate(a.due) || "9999-12-31";
-      const dbb = parseFSDate(b.due) || "9999-12-31";
-      return da.localeCompare(dbb);
-    }
-    if (mode === "priority"){
-      const rank = (p)=> ({high:0, med:1, low:2})[p||"med"] ?? 9;
-      const ra = rank(a.priority);
-      const rb = rank(b.priority);
-      if (ra !== rb) return ra - rb;
-      const ua = a.updatedAt?.seconds || 0;
-      const ub = b.updatedAt?.seconds || 0;
-      return ub - ua;
-    }
-    // recent
-    const ua = a.updatedAt?.seconds || 0;
-    const ub = b.updatedAt?.seconds || 0;
-    return ub - ua;
-  });
+  function progressHTML(task) {
+    const p = getProgress(task);
+    if (p.total === 0) return `<div class="progressLine">No assignees</div>`;
+    if (p.fullyDone) return `<div class="progressLine"><b>Fully done</b> (${p.count}/${p.total})</div>`;
 
-  taskCount.textContent = String(list.length);
-
-  tasksBody.innerHTML = list.map(t=>{
-    const due = parseFSDate(t.due) || "";
-    const safeDesc = escapeHtml(t.desc || "");
-    const safeNotes = escapeHtml(t.notes || "");
-
-    const key = guessAssignedKey(t);
-    const resolved = resolveAssignment(key);
-    const label = t.assignedLabel || resolved.label || t.assigned || "";
-    const targets = getTargets(t);
-    const doneBy = t.doneBy || {};
-    const doneCount = targets.filter(id => !!doneBy?.[id]).length;
-    const fully = isFullyDone(t);
-    const mine = currentUserId && targets.includes(currentUserId);
-
-    const chips = targets.length ? targets.map(id=>{
-      const m = MEMBER_BY_ID[id];
-      const nm = m ? m.name : id;
-      const isMe = id === currentUserId;
-      const isDone = !!doneBy?.[id];
-      const cls = ["chip", isMe?"chip--me":"", isDone?"chip--done":""].filter(Boolean).join(" ");
-      const title = `${nm}${isMe?" (you)":""}${isDone?" — done":""}`;
-      // only you can toggle your own chip
-      const attr = isMe ? `data-act="toggleDone" data-who="${id}"` : "";
-      return `<span class="${cls}" title="${escapeHtml(title)}" ${attr}>${escapeHtml(initials(nm))}</span>`;
-    }).join("") : `<span class="muted">—</span>`;
-
-    const assigneeOptions = [
-      ['user:youssef_elkhayat','Youssef Elkhayat'],
-      ['user:youssef_roshdy','Youssef Roshdy'],
-      ['user:mohamed_alainiah','Mohamed AlAiniah'],
-      ['user:ahmed_saeed','Ahmed Saeed'],
-      ['user:mohamed_elmansy','Mohamed ElMansy'],
-      ['team:cad','CAD Team'],
-      ['team:prototype','Prototype Team'],
-      ['all','All'],
-    ].map(([v,txt])=>`<option value="${v}" ${v===key?"selected":""}>${txt}</option>`).join("");
+    const doneNames = p.done.length ? `Done: ${p.done.join(", ")}` : "Done: —";
+    const left = p.involved.filter((x) => !p.done.includes(x));
+    const leftNames = left.length ? `Left: ${left.join(", ")}` : "Left: —";
 
     return `
-      <tr data-id="${t.id}" class="${mine?"row--mine":""}">
-        <td><input class="cellInput" data-field="desc" value="${safeDesc}" placeholder="Task description" /></td>
-        <td>
-          <div class="assignedCell">
-            <select class="select" data-field="assignedKey">${assigneeOptions}</select>
-            <div class="assignedMeta">${escapeHtml(label)}${targets.length?` • ${targets.length} member${targets.length>1?'s':''}`:""}</div>
-          </div>
-        </td>
-        <td>
-          <div class="progressCell">
-            <div class="progressChips">${chips}</div>
-            <div class="progressMeta">
-              <span class="badge">${doneCount}/${targets.length || 0} done</span>
-              ${fully?`<span class="badge badge--done">Fully done</span>`:""}
-            </div>
-          </div>
-        </td>
-        <td>
-          <select class="select" data-field="priority">
-            <option value="low" ${(t.priority==="low")?"selected":""}>Low</option>
-            <option value="med" ${(!t.priority || t.priority==="med")?"selected":""}>Medium</option>
-            <option value="high" ${(t.priority==="high")?"selected":""}>High</option>
-          </select>
-        </td>
-        <td><input class="cellInput" data-field="due" type="date" value="${escapeHtml(due)}" /></td>
-        <td><input class="cellInput" data-field="notes" value="${safeNotes}" placeholder="Notes" /></td>
-        <td class="th--right">
-          <div class="actionsRight">
-            <button class="smallBtn danger" data-act="del">Delete</button>
-          </div>
-        </td>
-      </tr>
+      <div class="progressLine"><b>In progress</b> (${p.count}/${p.total})</div>
+      <div class="progressNames">${escapeHtml(doneNames)}</div>
+      <div class="progressNames">${escapeHtml(leftNames)}</div>
     `;
-  }).join("");
+  }
 
-  tasksEmpty.hidden = list.length !== 0;
-}
+  function renderTasks() {
+    const q = searchQuery.trim().toLowerCase();
+    const pr = filterPriority.value;
+    const st = filterStatus.value;
+    const sortMode = sortTasks.value;
 
-async function patchTask(id, patch){
-  patch.updatedAt = serverTimestamp();
-  await updateDoc(doc(db, "tasks", id), patch);
-}
+    let list = Array.isArray(state.tasks) ? [...state.tasks] : [];
 
-async function reassignTask(id, assignedKey){
-  const r = resolveAssignment(assignedKey);
-  await patchTask(id, {
-    assignedKey: r.key || assignedKey,
-    assignedLabel: r.label || "",
-    targets: r.targets || [],
-    doneBy: {},
-    fullyDone: false,
-  });
-}
+    // search
+    if (q) {
+      list = list.filter((t) => `${t.desc || ""} ${t.notes || ""}`.toLowerCase().includes(q));
+    }
 
-async function toggleMyDone(task){
-  if (!currentUserId) return;
-  const targets = getTargets(task);
-  if (!targets.includes(currentUserId)) return;
-  const doneBy = task.doneBy || {};
-  const isDone = !!doneBy?.[currentUserId];
+    // priority filter
+    if (pr !== "all") list = list.filter((t) => (t.priority || "med") === pr);
 
-  const patch = {};
-  patch[`doneBy.${currentUserId}`] = isDone ? deleteField() : serverTimestamp();
-  // compute next done count locally
-  const nextDone = new Set(targets.filter(id => !!doneBy?.[id]));
-  if (isDone) nextDone.delete(currentUserId); else nextDone.add(currentUserId);
-  const fully = targets.length > 0 && nextDone.size === targets.length;
-  patch.fullyDone = fully;
+    // status filter (computed)
+    if (st === "open") list = list.filter((t) => !getProgress(t).fullyDone);
+    if (st === "done") list = list.filter((t) => getProgress(t).fullyDone);
+    if (st === "mine") list = list.filter((t) => isInvolved(t, me));
 
-  await patchTask(task.id, patch);
-}
+    // sort
+    list.sort((a, b) => {
+      if (sortMode === "dueAsc") return String(a.due || "9999-12-31").localeCompare(String(b.due || "9999-12-31"));
+      if (sortMode === "priorityDesc") return (PRIORITY_SCORE[b.priority || "med"] || 2) - (PRIORITY_SCORE[a.priority || "med"] || 2);
+      if (sortMode === "createdDesc") return (b.createdAt || 0) - (a.createdAt || 0);
+      // updatedDesc
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
 
-async function createTask(data){
-  const r = resolveAssignment(data.assignedKey);
-  const docRef = await addDoc(tasksCol, {
-    desc: data.desc || "Lorem ipsum",
-    assignedKey: r.key || data.assignedKey || "",
-    assignedLabel: r.label || "",
-    targets: r.targets || [],
-    priority: data.priority || "med",
-    due: data.due || "",
-    notes: data.notes || "",
-    doneBy: {},
-    fullyDone: false,
-    createdBy: currentUserId || "",
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
+    taskCount.textContent = String(list.length);
+    tasksEmpty.hidden = list.length !== 0;
 
-  // Email members involved (best-effort; task creation should not fail if email fails)
-  try{
-    const recipients = (r.targets || []).map(id => MEMBER_BY_ID[id]?.email).filter(Boolean);
-    if (recipients.length){
-      await fetch("/.netlify/functions/sendTaskEmail", {
+    tasksBody.innerHTML = list
+      .map((t) => {
+        const mine = isInvolved(t, me);
+        const p = getProgress(t);
+        const checked = !!(t.doneBy && t.doneBy[me]);
+        const checkbox = mine
+          ? `<label class="myDone"><input type="checkbox" data-act="myDone" ${checked ? "checked" : ""}/>Done (me)</label>`
+          : `<div class="myDone myDone--disabled"><input type="checkbox" disabled />Not assigned</div>`;
+
+        return `
+          <tr data-id="${escapeHtml(t.id)}" class="${mine ? "taskRow--mine" : ""}">
+            <td><input class="cellInput" data-field="desc" value="${escapeHtml(t.desc || "")}" placeholder="Task description" /></td>
+
+            <td>
+              <div class="chips">${chipsHTML(t.targets || [])}</div>
+              <div class="inlineActions">
+                <button class="smallBtn" data-act="editAssign" type="button">Edit</button>
+              </div>
+            </td>
+
+            <td>
+              <select class="select" data-field="priority">
+                <option value="low" ${t.priority === "low" ? "selected" : ""}>Low</option>
+                <option value="med" ${!t.priority || t.priority === "med" ? "selected" : ""}>Medium</option>
+                <option value="high" ${t.priority === "high" ? "selected" : ""}>High</option>
+              </select>
+            </td>
+
+            <td><input class="cellInput" data-field="due" type="date" value="${escapeHtml(t.due || "")}" /></td>
+
+            <td>
+              <div class="statusCell">
+                ${checkbox}
+                ${progressHTML(t)}
+              </div>
+            </td>
+
+            <td><input class="cellInput" data-field="notes" value="${escapeHtml(t.notes || "")}" placeholder="Notes" /></td>
+
+            <td class="th--right">
+              <div class="actionsRight">
+                <button class="smallBtn danger" data-act="del" type="button">Delete</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  function renderStats() {
+    statLinks.textContent = String(state.links?.length || 0);
+    statTasks.textContent = String(state.tasks?.length || 0);
+    const open = (state.tasks || []).filter((t) => !getProgress(t).fullyDone).length;
+    statOpen.textContent = String(open);
+  }
+
+  function openTaskDialog(mode, task) {
+    showTaskEditId = mode === "edit" ? task?.id : null;
+    taskDialogTitle.textContent = mode === "edit" ? "Edit task" : "New task";
+    taskSaveBtn.textContent = mode === "edit" ? "Save" : "Create";
+
+    taskDesc.value = task?.desc || "";
+    taskDue.value = task?.due || "";
+    taskPriority.value = task?.priority || "med";
+    taskNotes.value = task?.notes || "";
+
+    const targets = normalizeTargets(task?.targets || []);
+    // clear selections
+    [...taskAssignees.options].forEach((o) => (o.selected = targets.includes(o.value)));
+
+    taskDialog.showModal();
+    setTimeout(() => taskDesc.focus(), 30);
+  }
+
+  function getSelectedTargets() {
+    const selected = [...taskAssignees.selectedOptions].map((o) => o.value);
+    return normalizeTargets(selected);
+  }
+
+  async function sendTaskEmail(task) {
+    try {
+      await fetch(EMAIL_FN, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: token ? `Bearer ${token}` : "",
+        },
         body: JSON.stringify({
-          taskId: docRef.id,
           task: {
-            description: data.desc || "Lorem ipsum",
-            assignedTo: r.label || "",
-            priority: data.priority || "med",
-            due: data.due || "",
-            notes: data.notes || "",
-            createdBy: MEMBER_BY_ID[currentUserId]?.name || "",
+            desc: task.desc,
+            targets: task.targets,
+            due: task.due,
+            priority: task.priority,
+            notes: task.notes,
+            createdBy: task.createdBy,
           },
-          recipients,
-        })
+        }),
       });
+    } catch (e) {
+      console.warn("Email failed:", e);
     }
-  }catch(err){ console.warn("Email notify failed", err); }
-}
+  }
 
-async function deleteTask(id){
-  await deleteDoc(doc(db, "tasks", id));
-}
-/* Notes (debounced save) */
-let notesTimer = null;
-function scheduleNotesSave(){
-  notesStatus.textContent = "Typing…";
-  if (notesTimer) clearTimeout(notesTimer);
-  notesTimer = setTimeout(async ()=>{
-    try{
-      await updateDoc(notesRef, { text: notesBox.value, updatedAt: serverTimestamp() });
-      notesStatus.textContent = "Saved";
-    }catch(e){
-      notesStatus.textContent = "Save failed";
-      console.error(e);
-    }
-  }, 450);
-}
+  // ---------------------------
+  // Notes
+  // ---------------------------
+  function scheduleNotesSave() {
+    state.notes = notesBox.value;
+    scheduleSave("Saving notes…");
+  }
 
-/* Export / Import */
-function download(filename, text){
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], {type:"application/json"}));
-  a.download = filename;
-  a.click();
-  setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
-}
+  // ---------------------------
+  // Export / Import
+  // ---------------------------
+  function download(filename, text) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
 
-function stateAsJSON(){
-  const out = {
-    links: links.map(l => ({
-      title:l.title||"",
-      url:l.url||"",
-      desc:l.desc||"",
-      order:Number(l.order||0)
-    })),
-    tasks: tasks.map(t => ({
-      desc: t.desc || "",
-      assignedKey: guessAssignedKey(t),
-      assignedLabel: t.assignedLabel || "",
-      targets: getTargets(t),
-      priority: t.priority || "med",
-      due: parseFSDate(t.due) || "",
-      notes: t.notes || "",
-      doneBy: Object.keys(t.doneBy || {}),
-      fullyDone: isFullyDone(t)
-    })),
-    notes: notesBox.value || ""
-  };
-  return JSON.stringify(out, null, 2);
-}
+  function stateAsJSON() {
+    return JSON.stringify(state, null, 2);
+  }
 
-async function importFromJSON(obj){
-  const batch = writeBatch(db);
+  function replaceStateFromJSON(obj) {
+    // Keep workspaceName + version if missing
+    state = {
+      version: 1,
+      workspaceName: String(obj?.workspaceName || "Team Hub"),
+      notes: String(obj?.notes || ""),
+      links: Array.isArray(obj?.links) ? obj.links : [],
+      tasks: Array.isArray(obj?.tasks) ? obj.tasks : [],
+    };
+  }
 
-  // wipe existing (batched deletes in chunks)
-  // (safe for small teams; for huge datasets you'd paginate)
-  for (const l of links) batch.delete(doc(db,"links", l.id));
-  for (const t of tasks) batch.delete(doc(db,"tasks", t.id));
-  batch.set(notesRef, { text: String(obj.notes||""), updatedAt: serverTimestamp() }, { merge:true });
+  // ---------------------------
+  // Events
+  // ---------------------------
+  themeToggle.addEventListener("click", toggleTheme);
+  logoutBtn.addEventListener("click", () => lock());
+  whoBtn.addEventListener("click", () => showWhoPicker());
 
-  // add new docs
-  (obj.links || []).forEach((l, idx)=>{
-    const ref = doc(collection(db,"links"));
-    batch.set(ref, {
-      title: String(l.title || "Lorem ipsum"),
-      url: String(l.url || "#"),
-      desc: String(l.desc || "Lorem ipsum"),
-      order: Number.isFinite(Number(l.order)) ? Number(l.order) : idx*100,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
+  pinClearBtn.addEventListener("click", () => {
+    localStorage.removeItem(LS_TOKEN);
+    localStorage.removeItem(LS_PINHASH);
+    token = "";
+    pinHash = "";
+    authMsg.textContent = "Forgotten on this device.";
   });
 
-  (obj.tasks || []).forEach((t)=>{
-    const ref = doc(collection(db,"tasks"));
-    batch.set(ref, {
-      desc: String(t.desc || "Lorem ipsum"),
-      assignedKey: String(t.assignedKey || guessAssignedKey(t) || ""),
-      assignedLabel: String(t.assignedLabel || resolveAssignment(String(t.assignedKey || "")).label || ""),
-      targets: Array.isArray(t.targets) && t.targets.length ? t.targets : resolveAssignment(String(t.assignedKey || "")).targets,
-      priority: String(t.priority || "med"),
-      due: String(t.due || ""),
-      notes: String(t.notes || ""),
-      doneBy: Array.isArray(t.doneBy) ? Object.fromEntries(t.doneBy.map(id => [id, true])) : (t.doneBy || {}),
-      fullyDone: Boolean(t.fullyDone),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
+  authForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    authMsg.textContent = "Checking…";
+    try {
+      await loginWithPin(pinInput.value.trim());
+      pinInput.value = "";
+      hideAuth();
+      await loadState();
+      if (!me) showWhoPicker();
+      authMsg.textContent = "";
+    } catch (err) {
+      console.error(err);
+      authMsg.textContent = "Wrong PIN (or server error).";
+      pinInput.select();
+    }
   });
 
-  await batch.commit();
-}
+  whoList.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-who]");
+    if (!btn) return;
+    setMe(btn.dataset.who || "");
+    hideWhoPicker();
+  });
 
-/* Events */
-themeToggle.addEventListener("click", toggleTheme);
-logoutBtn.addEventListener("click", lock);
+  globalSearch.addEventListener("input", () => {
+    searchQuery = globalSearch.value || "";
+    renderLinks();
+    renderTasks();
+  });
 
-pinClearBtn.addEventListener("click", ()=>{
-  localStorage.removeItem(LS_PINHASH);
-  authMsg.textContent = "Forgotten on this device.";
-});
+  // Links dialog open
+  newLinkBtn.addEventListener("click", () => openLinkDialog("new"));
+  linkDialog.addEventListener("close", () => {
+    if (linkDialog.returnValue !== "ok") return;
+    const title = linkTitle.value.trim() || "Lorem ipsum";
+    const url = linkUrl.value.trim() || "#";
+    const desc = linkDesc.value.trim() || "Lorem ipsum";
 
-authForm.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  authMsg.textContent = "Checking…";
-  const ok = await unlockWithPin(pinInput.value.trim());
-  if (ok){
-    authMsg.textContent = "";
-    pinInput.value = "";
-    // ensure subscriptions only after unlock
-    startSubscriptions();
-  } else {
-    authMsg.textContent = "Wrong PIN.";
-    pinInput.select();
-  }
-});
-
-// Who are you? (identity used for per-person task completion)
-whoBtn?.addEventListener("click", ()=> openWhoOverlay());
-whoOverlay?.addEventListener("click", (e)=>{
-  if (e.target === whoOverlay) closeWhoOverlay();
-});
-document.addEventListener("keydown", (e)=>{
-  if (e.key === "Escape" && !whoOverlay.hidden) closeWhoOverlay();
-});
-whoList?.addEventListener("click", (e)=>{
-  const btn = e.target.closest("[data-who]");
-  if (!btn) return;
-  setCurrentUser(btn.dataset.who);
-  closeWhoOverlay();
-});
-
-
-globalSearch.addEventListener("input", ()=>{
-  searchQuery = globalSearch.value || "";
-  renderLinks();
-  renderTasks();
-});
-
-newLinkBtn.addEventListener("click", ()=> openLinkDialog("new"));
-linkForm.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-});
-linkDialog.addEventListener("close", async ()=>{
-  if (linkDialog.returnValue !== "ok") return;
-  const data = {
-    title: linkTitle.value.trim() || "Lorem ipsum",
-    url: linkUrl.value.trim() || "#",
-    desc: linkDesc.value.trim() || "Lorem ipsum"
-  };
-  try{
-    if (editingLinkId) await updateLink(editingLinkId, data);
-    else await createLink(data);
-  }catch(err){ console.error(err); }
-  editingLinkId = null;
-});
-
-linksGrid.addEventListener("click", async (e)=>{
-  const card = e.target.closest(".linkCard");
-  if (!card) return;
-  const id = card.dataset.id;
-  const actBtn = e.target.closest("[data-act]");
-  if (!actBtn) return;
-  const act = actBtn.dataset.act;
-  const link = links.find(x=> x.id === id);
-  if (act === "edit" && link){
-    openLinkDialog("edit", link);
-  }
-  if (act === "del"){
-    if (confirm("Delete this link?")){
-      try{ await deleteLinkById(id); } catch(err){ console.error(err); }
-    }
-  }
-});
-
-/* Drag reorder links */
-linksGrid.addEventListener("dragstart", (e)=>{
-  const card = e.target.closest(".linkCard");
-  if (!card) return;
-  dragId = card.dataset.id;
-  card.classList.add("dragging");
-  e.dataTransfer.effectAllowed = "move";
-});
-linksGrid.addEventListener("dragend", (e)=>{
-  const card = e.target.closest(".linkCard");
-  if (!card) return;
-  card.classList.remove("dragging");
-  dragId = null;
-});
-linksGrid.addEventListener("dragover", (e)=>{
-  e.preventDefault();
-  const over = e.target.closest(".linkCard");
-  if (!over || !dragId) return;
-  const overId = over.dataset.id;
-  if (overId === dragId) return;
-
-  // reorder in-memory for instant UI
-  const a = links.findIndex(x=> x.id === dragId);
-  const b = links.findIndex(x=> x.id === overId);
-  if (a < 0 || b < 0) return;
-
-  const next = [...links];
-  const [moved] = next.splice(a, 1);
-  next.splice(b, 0, moved);
-  links = next;
-  renderLinks();
-});
-linksGrid.addEventListener("drop", async (e)=>{
-  e.preventDefault();
-  if (!dragId) return;
-  try{
-    const ids = [...links].sort((x,y)=>Number(x.order||0)-Number(y.order||0)).map(x=>x.id);
-    // our render drag reorders links array, but Firestore ordering is by "order"
-    // so persist current visual order by reading DOM order:
-    const domIds = $$(".linkCard", linksGrid).map(el=> el.dataset.id);
-    if (domIds.length) await persistLinkOrder(domIds);
-  }catch(err){ console.error(err); }
-});
-
-/* Tasks dialogs */
-const taskTimers = new Map();
-function scheduleTaskPatch(id, patch){
-  const cur = taskTimers.get(id) || { t:null, patch:{} };
-  Object.assign(cur.patch, patch);
-  if (cur.t) clearTimeout(cur.t);
-  cur.t = setTimeout(async ()=>{
-    try{
-      await patchTask(id, cur.patch);
-    }catch(err){ console.warn("task patch failed", err); }
-    taskTimers.delete(id);
-  }, 450);
-  taskTimers.set(id, cur);
-}
-
-function openNewTaskDialog(){
-  taskDialogTitle.textContent = "New task";
-  taskDesc.value = "";
-  taskAssigned.value = currentUserId ? `user:${currentUserId}` : "all";
-  taskDue.value = "";
-  taskPriority.value = "med";
-  taskNotes.value = "";
-  taskDialog.showModal();
-}
-
-newTaskBtn.addEventListener("click", openNewTaskDialog);
-
-taskDialog.addEventListener("close", async ()=>{
-  if (taskDialog.returnValue !== "ok") return;
-  const data = {
-    desc: taskDesc.value.trim(),
-    assignedKey: taskAssigned.value,
-    due: taskDue.value || "",
-    priority: taskPriority.value || "med",
-    notes: taskNotes.value.trim(),
-  };
-  await createTask(data);
-});
-
-function getTaskById(id){ return tasks.find(t=>t.id===id); }
-
-tasksBody.addEventListener("click", async (e)=>{
-  const tr = e.target.closest("tr[data-id]");
-  if (!tr) return;
-  const id = tr.dataset.id;
-  const act = e.target.dataset.act || e.target.closest("[data-act]")?.dataset?.act;
-  if (act === "del"){
-    await deleteTask(id);
-    return;
-  }
-  if (act === "toggleDone"){
-    const t = getTaskById(id);
-    if (!t) return;
-    await toggleMyDone(t);
-    return;
-  }
-});
-
-tasksBody.addEventListener("input", (e)=>{
-  const tr = e.target.closest("tr[data-id]");
-  if (!tr) return;
-  const id = tr.dataset.id;
-  const field = e.target.dataset.field;
-  if (!field) return;
-  if (field === "assignedKey") return; // handled on change
-  const val = e.target.value;
-  scheduleTaskPatch(id, { [field]: val });
-});
-
-tasksBody.addEventListener("change", async (e)=>{
-  const tr = e.target.closest("tr[data-id]");
-  if (!tr) return;
-  const id = tr.dataset.id;
-  const field = e.target.dataset.field;
-  if (!field) return;
-  if (field === "assignedKey"){
-    await reassignTask(id, e.target.value);
-    return;
-  }
-  scheduleTaskPatch(id, { [field]: e.target.value });
-});
-/* Notes */
-notesBox.addEventListener("input", scheduleNotesSave);
-
-/* Export/Import */
-exportBtn.addEventListener("click", ()=>{
-  download(`teamhub-export-${Date.now()}.json`, stateAsJSON());
-});
-importFile.addEventListener("change", async ()=>{
-  const f = importFile.files?.[0];
-  if (!f) return;
-  try{
-    const txt = await f.text();
-    const obj = JSON.parse(txt);
-    if (!confirm("Import will replace current data. Continue?")) return;
-    await importFromJSON(obj);
-  }catch(err){
-    alert("Import failed. Check JSON format.");
-    console.error(err);
-  }finally{
-    importFile.value = "";
-  }
-});
-
-/* Init */
-(async function init(){
-  loadTheme();
-
-  showAuth("");
-  setAuthFooter("Preparing database…");
-
-  try{
-    await ensureBootstrap();
-    setAuthFooter("Checking PIN…");
-    await fetchRemotePinHash();
-    startConfigWatch();
-
-    const auto = await tryAutoUnlock();
-    if (!auto){
-      showAuth("");
-      setAuthFooter("Enter PIN to unlock.");
+    if (showLinkEditId) {
+      const i = state.links.findIndex((x) => x.id === showLinkEditId);
+      if (i >= 0) {
+        state.links[i] = { ...state.links[i], title, url, desc, updatedAt: Date.now() };
+      }
     } else {
-      startSubscriptions();
+      const maxOrder = state.links.reduce((m, l) => Math.max(m, Number(l.order || 0)), 0);
+      state.links.push({ id: uid(), title, url, desc, order: maxOrder + 100, createdAt: Date.now(), updatedAt: Date.now() });
     }
-  }catch(err){
-    console.error(err);
-    showAuth("Connection error. Check Firebase config/rules.");
-    setAuthFooter("Failed to connect.");
+    showLinkEditId = null;
+    renderLinks();
+    renderStats();
+    scheduleSave();
+  });
+
+  // Link card actions
+  linksGrid.addEventListener("click", (e) => {
+    const card = e.target.closest(".linkCard");
+    if (!card) return;
+    const id = card.dataset.id;
+    const act = e.target.closest("[data-act]")?.dataset?.act;
+    if (!act) return;
+    const link = state.links.find((x) => x.id === id);
+    if (act === "edit" && link) openLinkDialog("edit", link);
+    if (act === "del") {
+      if (!confirm("Delete this link?")) return;
+      state.links = state.links.filter((x) => x.id !== id);
+      renderLinks();
+      renderStats();
+      scheduleSave();
+    }
+  });
+
+  // Basic drag reorder (links)
+  let dragId = null;
+  linksGrid.addEventListener("dragstart", (e) => {
+    const card = e.target.closest(".linkCard");
+    if (!card) return;
+    dragId = card.dataset.id;
+    card.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+  });
+  linksGrid.addEventListener("dragend", (e) => {
+    const card = e.target.closest(".linkCard");
+    if (!card) return;
+    card.classList.remove("dragging");
+    dragId = null;
+  });
+  linksGrid.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    const over = e.target.closest(".linkCard");
+    if (!over || !dragId) return;
+    const overId = over.dataset.id;
+    if (overId === dragId) return;
+
+    const list = state.links.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const a = list.findIndex((x) => x.id === dragId);
+    const b = list.findIndex((x) => x.id === overId);
+    if (a < 0 || b < 0) return;
+    const [moved] = list.splice(a, 1);
+    list.splice(b, 0, moved);
+    list.forEach((l, idx) => (l.order = idx * 100));
+    state.links = list;
+    renderLinks();
+  });
+  linksGrid.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (!dragId) return;
+    scheduleSave();
+  });
+
+  // Tasks
+  newTaskBtn.addEventListener("click", () => openTaskDialog("new"));
+  taskDialog.addEventListener("close", async () => {
+    if (taskDialog.returnValue !== "ok") return;
+
+    const next = {
+      desc: taskDesc.value.trim() || "Lorem ipsum",
+      targets: getSelectedTargets(),
+      due: taskDue.value || "",
+      priority: taskPriority.value || "med",
+      notes: taskNotes.value.trim() || "",
+      updatedAt: Date.now(),
+    };
+
+    if (!next.targets.length) {
+      alert("Please select at least one assignee (person/team/all).");
+      return;
+    }
+
+    if (showTaskEditId) {
+      const i = state.tasks.findIndex((x) => x.id === showTaskEditId);
+      if (i >= 0) {
+        state.tasks[i] = { ...state.tasks[i], ...next };
+      }
+      showTaskEditId = null;
+      renderTasks();
+      renderStats();
+      scheduleSave();
+      return;
+    }
+
+    const task = {
+      id: uid(),
+      ...next,
+      createdAt: Date.now(),
+      createdBy: me || "Unknown",
+      doneBy: {}, // per-person
+    };
+
+    state.tasks.push(task);
+    renderTasks();
+    renderStats();
+    scheduleSave();
+
+    // Email (best-effort)
+    await sendTaskEmail(task);
+  });
+
+  // inline edits + actions
+  let patchTimer = null;
+  let pendingPatches = new Map();
+
+  function queueTaskPatch(id, patch) {
+    const existing = pendingPatches.get(id) || {};
+    pendingPatches.set(id, { ...existing, ...patch, updatedAt: Date.now() });
+
+    if (patchTimer) clearTimeout(patchTimer);
+    patchTimer = setTimeout(() => {
+      if (!pendingPatches.size) return;
+      for (const [tid, p] of pendingPatches) {
+        const i = state.tasks.findIndex((x) => x.id === tid);
+        if (i >= 0) state.tasks[i] = { ...state.tasks[i], ...p };
+      }
+      pendingPatches.clear();
+      renderTasks();
+      renderStats();
+      scheduleSave();
+    }, 300);
   }
+
+  tasksBody.addEventListener("input", (e) => {
+    const row = e.target.closest("tr[data-id]");
+    if (!row) return;
+    const id = row.dataset.id;
+    const field = e.target.dataset.field;
+    if (!field) return;
+    queueTaskPatch(id, { [field]: e.target.value });
+  });
+
+  tasksBody.addEventListener("change", (e) => {
+    const row = e.target.closest("tr[data-id]");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    // Priority select uses data-field too
+    const field = e.target.dataset.field;
+    if (field === "priority") {
+      queueTaskPatch(id, { priority: e.target.value });
+      return;
+    }
+
+    // My Done checkbox
+    const act = e.target.dataset.act;
+    if (act === "myDone") {
+      const i = state.tasks.findIndex((x) => x.id === id);
+      if (i < 0) return;
+      const task = state.tasks[i];
+
+      if (!isInvolved(task, me)) return; // safety
+      const doneBy = { ...(task.doneBy || {}) };
+      doneBy[me] = !!e.target.checked;
+      queueTaskPatch(id, { doneBy });
+      return;
+    }
+  });
+
+  tasksBody.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-id]");
+    if (!row) return;
+    const id = row.dataset.id;
+
+    const act = e.target.closest("[data-act]")?.dataset?.act;
+    if (!act) return;
+
+    const task = state.tasks.find((x) => x.id === id);
+    if (!task) return;
+
+    if (act === "del") {
+      if (!confirm("Delete this task?")) return;
+      state.tasks = state.tasks.filter((x) => x.id !== id);
+      renderTasks();
+      renderStats();
+      scheduleSave();
+    }
+
+    if (act === "editAssign") {
+      openTaskDialog("edit", task);
+    }
+  });
+
+  filterStatus.addEventListener("change", renderTasks);
+  filterPriority.addEventListener("change", renderTasks);
+  sortTasks.addEventListener("change", renderTasks);
+
+  // Notes
+  notesBox.addEventListener("input", scheduleNotesSave);
+
+  // Export/Import
+  exportBtn.addEventListener("click", () => download(`teamhub-export-${Date.now()}.json`, stateAsJSON()));
+  importFile.addEventListener("change", async () => {
+    const f = importFile.files?.[0];
+    if (!f) return;
+    try {
+      const obj = JSON.parse(await f.text());
+      if (!confirm("Import will replace current data. Continue?")) return;
+      replaceStateFromJSON(obj);
+      notesBox.value = state.notes || "";
+      renderLinks();
+      renderTasks();
+      renderStats();
+      scheduleSave("Importing…");
+    } catch (e) {
+      console.error(e);
+      alert("Import failed. Check JSON format.");
+    } finally {
+      importFile.value = "";
+    }
+  });
+
+  // ---------------------------
+  // Init
+  // ---------------------------
+  async function init() {
+    loadTheme();
+    whoLabel.textContent = "Pick user";
+
+    showAuth("");
+    setAuthFooter("Preparing…");
+
+    // Detect PIN change (client-side)
+    try {
+      const current = await getServerPinHash();
+      if (current && pinHash && current !== pinHash) {
+        // PIN changed -> force re-login
+        localStorage.removeItem(LS_TOKEN);
+        token = "";
+      }
+      if (current) {
+        pinHash = current;
+        localStorage.setItem(LS_PINHASH, current);
+      }
+    } catch {
+      // ignore
+    }
+
+    // If we already have token, try to load state
+    if (token) {
+      setAuthFooter("Restoring session…");
+      try {
+        hideAuth();
+        await loadState();
+      } catch (e) {
+        console.error(e);
+        lock("Session expired. Enter PIN again.");
+      }
+    } else {
+      setAuthFooter("Enter PIN to unlock.");
+    }
+
+    // Ask who after unlock
+    if (!authOverlay.hidden && token) {
+      // rare, but keep safe
+    }
+    if (token) {
+      if (me) setMe(me);
+      else showWhoPicker();
+    }
+  }
+
+  init();
 })();

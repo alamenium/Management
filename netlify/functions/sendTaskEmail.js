@@ -1,193 +1,154 @@
-const tls = require("tls");
+// netlify/functions/sendTaskEmail.js
+// Sends email notifications on new task creation.
+// Auth: requires the same Bearer token issued by api.js (HMAC signed).
+//
+// ENV required:
+//   AUTH_SECRET
+//   GMAIL_USER
+//   GMAIL_APP_PASSWORD
+//
+// NOTE: Do NOT hardcode credentials in this file.
 
-const GMAIL_HOST = "smtp.gmail.com";
-const GMAIL_PORT = 465;
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
 
-// Only allow emailing these addresses (prevents the endpoint being used to email random people)
-const ALLOWED_RECIPIENTS = new Set([
-  "youssifayman2004@gmail.com",
-  "yousufdiaa2004@gmail.com",
-  "saeedahmedsuper@gmail.com",
-  "mohammadadham20@gmail.com",
-  "Mohammad.bashar033@gmail.com",
-].map(x => x.toLowerCase()));
+/**
+ * Allowed recipients (hardcoded to your team)
+ */
+const MEMBERS = [
+  { id: "Youssef Elkhayat", team: "CAD Team", email: "youssifayman2004@gmail.com" },
+  { id: "Youssef Roshdy", team: "Prototype Team", email: "yousufdiaa2004@gmail.com" },
+  { id: "Mohamed AlAiniah", team: "CAD Team", email: "Mohammad.bashar033@gmail.com" },
+  { id: "Ahmed Saeed", team: "Prototype Team", email: "saeedahmedsuper@gmail.com" },
+  { id: "Mohamed ElMansy", team: "CAD Team", email: "mohammadadham20@gmail.com" },
+];
 
-function json(statusCode, bodyObj){
-  return {
-    statusCode,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "POST,OPTIONS",
-    },
-    body: JSON.stringify(bodyObj),
-  };
+const TEAM_MEMBERS = {
+  "CAD Team": MEMBERS.filter(m => m.team === "CAD Team").map(m => m.id),
+  "Prototype Team": MEMBERS.filter(m => m.team === "Prototype Team").map(m => m.id),
+};
+
+const MEMBER_BY_ID = Object.fromEntries(MEMBERS.map(m => [m.id, m]));
+const ALL_IDS = MEMBERS.map(m => m.id);
+
+const json = (status, body) => ({
+  statusCode: status,
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+function b64url(buf){
+  return Buffer.from(buf).toString("base64").replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
 }
 
-function clampStr(v, max){
-  return String(v ?? "").replace(/\r/g, "").slice(0, max);
-}
-
-function dotStuff(text){
-  // If a line starts with ".", escape it per SMTP rules
-  return text.split("\n").map(line => line.startsWith(".") ? "." + line : line).join("\n");
-}
-
-function readReply(socket){
-  return new Promise((resolve, reject) => {
-    let buf = "";
-    const onData = (chunk) => {
-      buf += chunk.toString("utf8");
-      // We consider reply complete when last line ends with "\r\n" and starts with "XYZ " (not "XYZ-")
-      const lines = buf.split("\r\n").filter(Boolean);
-      if (!lines.length) return;
-      const last = lines[lines.length - 1];
-      const m = last.match(/^(\d{3})\s/);
-      if (m){
-        cleanup();
-        resolve({ code: Number(m[1]), text: buf });
-      }
-    };
-    const onErr = (err) => { cleanup(); reject(err); };
-    const onEnd = () => { cleanup(); reject(new Error("SMTP socket ended unexpectedly")); };
-
-    function cleanup(){
-      socket.off("data", onData);
-      socket.off("error", onErr);
-      socket.off("end", onEnd);
-    }
-
-    socket.on("data", onData);
-    socket.on("error", onErr);
-    socket.on("end", onEnd);
-  });
-}
-
-async function sendCmd(socket, cmd, okCodes){
-  if (cmd) socket.write(cmd + "\r\n");
-  const rep = await readReply(socket);
-  if (!okCodes.includes(rep.code)){
-    const err = new Error(`SMTP error on "${cmd}": ${rep.code}`);
-    err.smtp = rep.text;
-    throw err;
-  }
-  return rep;
-}
-
-async function sendEmail({ user, pass, to, subject, text }){
-  return new Promise((resolve, reject) => {
-    const socket = tls.connect({
-      host: GMAIL_HOST,
-      port: GMAIL_PORT,
-      servername: GMAIL_HOST,
-    }, async () => {
-      try{
-        await sendCmd(socket, null, [220]);
-        await sendCmd(socket, "EHLO teamhub", [250]);
-        await sendCmd(socket, "AUTH LOGIN", [334]);
-        await sendCmd(socket, Buffer.from(user).toString("base64"), [334]);
-        await sendCmd(socket, Buffer.from(pass).toString("base64"), [235]);
-
-        await sendCmd(socket, `MAIL FROM:<${user}>`, [250]);
-        for (const r of to){
-          await sendCmd(socket, `RCPT TO:<${r}>`, [250, 251]);
-        }
-        await sendCmd(socket, "DATA", [354]);
-
-        const safeSubject = clampStr(subject, 160);
-        const safeText = dotStuff(clampStr(text, 20000));
-
-        const msg =
-          `From: Silicon Hall Management <${user}>\r\n` +
-          `To: ${to.join(", ")}\r\n` +
-          `Subject: ${safeSubject}\r\n` +
-          `MIME-Version: 1.0\r\n` +
-          `Content-Type: text/plain; charset="utf-8"\r\n` +
-          `Content-Transfer-Encoding: 8bit\r\n` +
-          `\r\n` +
-          `${safeText}\r\n`;
-
-        socket.write(msg.replace(/\n/g, "\r\n") + "\r\n.\r\n");
-        await sendCmd(socket, null, [250]);
-        await sendCmd(socket, "QUIT", [221]);
-
-        socket.end();
-        resolve();
-      }catch(err){
-        try{ socket.end(); }catch(_){}
-        reject(err);
-      }
-    });
-
-    socket.on("error", reject);
-  });
-}
-
-exports.handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") return json(200, { ok:true });
-
-  if (event.httpMethod !== "POST"){
-    return json(405, { ok:false, error:"Method not allowed" });
-  }
-
-  const user = process.env.GMAIL_USER || "siliconhall.management@gmail.com";
-  const pass = process.env.GMAIL_APP_PASSWORD;
-
-  if (!pass){
-    return json(500, {
-      ok:false,
-      error:"Missing GMAIL_APP_PASSWORD env var. Set it in Netlify → Site settings → Environment variables."
-    });
-  }
+function verifyToken(token, secret){
+  if(!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if(parts.length !== 3) return null;
+  const [h,p,s] = parts;
+  const msg = `${h}.${p}`;
+  const expected = b64url(crypto.createHmac("sha256", secret).update(msg).digest());
+  if(expected.length !== s.length) return null;
+  const ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(s));
+  if(!ok) return null;
 
   let payload;
   try{
-    payload = JSON.parse(event.body || "{}");
-  }catch{
-    return json(400, { ok:false, error:"Invalid JSON body" });
+    payload = JSON.parse(Buffer.from(p.replace(/-/g,"+").replace(/_/g,"/"), "base64").toString("utf8"));
+  }catch{ return null; }
+
+  if(payload.exp && Date.now() > payload.exp) return null;
+  return payload;
+}
+
+function getBearer(event){
+  const h = event.headers || {};
+  const auth = h.authorization || h.Authorization || "";
+  const m = String(auth).match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : "";
+}
+
+function normalizeTargets(arr){
+  const raw = Array.isArray(arr) ? arr.filter(Boolean).map(String) : [];
+  const set = new Set();
+  for (const t of raw) set.add(t);
+  if (set.has("All")) return ["All"];
+  return [...set];
+}
+
+function expandTargets(targets){
+  const t = normalizeTargets(targets);
+  const out = new Set();
+  for (const x of t){
+    if (x === "All"){
+      ALL_IDS.forEach(id => out.add(id));
+    } else if (TEAM_MEMBERS[x]){
+      TEAM_MEMBERS[x].forEach(id => out.add(id));
+    } else if (MEMBER_BY_ID[x]){
+      out.add(x);
+    }
   }
+  return [...out];
+}
 
-  const recipientsIn = Array.isArray(payload.recipients) ? payload.recipients : [];
-  const recipients = recipientsIn
-    .map(x => String(x||"").trim())
-    .filter(Boolean)
-    .filter(x => ALLOWED_RECIPIENTS.has(x.toLowerCase()));
+exports.handler = async (event) => {
+  try{
+    const AUTH_SECRET = process.env.AUTH_SECRET || "";
+    const GMAIL_USER = process.env.GMAIL_USER || "";
+    const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || "";
 
-  if (!recipients.length){
-    return json(200, { ok:true, skipped:true, reason:"No allowed recipients" });
-  }
+    if(!AUTH_SECRET) return json(500, { error: "Missing AUTH_SECRET" });
+    if(!GMAIL_USER || !GMAIL_APP_PASSWORD) return json(500, { error: "Missing Gmail env vars" });
 
-  const t = payload.task || {};
-  const description = clampStr(t.description, 500);
-  const assignedTo = clampStr(t.assignedTo, 120);
-  const priority = clampStr(t.priority, 20);
-  const due = clampStr(t.due, 40);
-  const notes = clampStr(t.notes, 2000);
-  const createdBy = clampStr(t.createdBy, 120);
+    const token = getBearer(event);
+    const payload = verifyToken(token, AUTH_SECRET);
+    if(!payload) return json(401, { error: "Unauthorized" });
 
-  const subject = `New task: ${description || "Task"}`;
-  const text =
-`A new task was created in Team Hub.
+    const body = event.body ? JSON.parse(event.body) : {};
+    const task = body.task || {};
 
-Description: ${description || "-"}
-Assigned to: ${assignedTo || "-"}
-Priority: ${priority || "-"}
-Due: ${due || "-"}
-Created by: ${createdBy || "-"}
+    const desc = String(task.desc || "Task");
+    const targets = normalizeTargets(task.targets || []);
+    const due = String(task.due || "—");
+    const priority = String(task.priority || "med");
+    const notes = String(task.notes || "—");
+    const createdBy = String(task.createdBy || "Unknown");
 
-Notes:
-${notes || "-"}
+    const involvedIds = expandTargets(targets);
+    const recipients = involvedIds
+      .map(id => MEMBER_BY_ID[id]?.email)
+      .filter(Boolean);
 
-Check it out: https://capston1.netlify.app
+    if(!recipients.length) return json(200, { ok:true, skipped:true });
 
-— Silicon Hall Management
+    const subject = `[Team Hub] New task: ${desc.slice(0, 80)}`;
+    const text =
+`New Task Created
+
+Description: ${desc}
+Assigned To: ${targets.join(", ")}  (expanded: ${involvedIds.join(", ")})
+Priority: ${priority}
+Due: ${due}
+Notes: ${notes}
+
+Created by: ${createdBy}
 `;
 
-  try{
-    await sendEmail({ user, pass, to: recipients, subject, text });
-    return json(200, { ok:true, sentTo: recipients.length });
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }
+    });
+
+    await transporter.sendMail({
+      from: `"${GMAIL_USER}" <${GMAIL_USER}>`,
+      to: GMAIL_USER,
+      bcc: recipients,
+      subject,
+      text,
+    });
+
+    return json(200, { ok:true, sent: recipients.length });
   }catch(err){
-    return json(500, { ok:false, error:"Email send failed", details: String(err?.smtp || err?.message || err) });
+    return json(500, { error: err.message || "Server error" });
   }
 };
