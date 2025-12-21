@@ -1,500 +1,814 @@
-/* Team Hub — single-page app (no framework)
-   - Persistent storage via Netlify Functions + Netlify Blobs
-   - Local cache fallback (localStorage) if offline
-*/
-const API_BASE = "/.netlify/functions/api";
-const LS_KEY = "teamhub_state_v1";
-const LS_THEME = "teamhub_theme_v1";
-const LS_NAME = "teamhub_workspace_v1";
-const LS_TOKEN = "teamhub_token_v1";
+// Team Hub — Firebase edition (no Netlify functions, no localStorage data)
+// - Data stored in Firestore: links, tasks, shared notes, config(pinHash)
+// - PIN cached (hash) locally; re-prompt only if Firestore pinHash changes
+// - Theme cached locally
+//
+// NOTE: Firestore security rules must allow your team to read/write.
+// If you see "permission-denied", update rules in Firebase console.
 
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc,
+  collection, addDoc, deleteDoc, onSnapshot,
+  query, orderBy, serverTimestamp, writeBatch
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+/* Firebase config (hardcoded) */
+const firebaseConfig = {
+  apiKey: "AIzaSyDGcdvcNW-zJTeMBozHaBET81IA3LmYdlE",
+  authDomain: "capstone-management-eb363.firebaseapp.com",
+  projectId: "capstone-management-eb363",
+  storageBucket: "capstone-management-eb363.firebasestorage.app",
+  messagingSenderId: "859371424164",
+  appId: "1:859371424164:web:24861b1adfcb31f5621931",
+  measurementId: "G-DK1TCKMCVZ"
+};
+
+const app = initializeApp(firebaseConfig);
+try { getAnalytics(app); } catch { /* analytics optional */ }
+const db = getFirestore(app);
+
+/* Defaults */
+const DEFAULT_PIN = "1234"; // first run only; change later by editing meta/config.pinHash
+const LS_THEME = "teamhub_theme_v2";
+const LS_PINHASH = "teamhub_pin_hash_v2";
+
+/* Helpers */
 const $ = (q, el=document) => el.querySelector(q);
 const $$ = (q, el=document) => [...el.querySelectorAll(q)];
+const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 
-const toastEl = $("#toast");
-let toastTimer = null;
-function toast(msg){
-  toastEl.textContent = msg;
-  toastEl.classList.add("is-show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>toastEl.classList.remove("is-show"), 2200);
+function nowISODate(){
+  const d = new Date();
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
 }
+function escapeHtml(s){
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+async function sha256Hex(text){
+  const enc = new TextEncoder().encode(String(text));
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2,"0")).join("");
+}
+// Dev helper: compute SHA-256 hex (useful if you want to update meta/config.pinHash)
+window.teamhubSha256 = sha256Hex;
 
-const nowIso = () => new Date().toISOString();
-function safeJsonParse(s, fallback){ try{ return JSON.parse(s); } catch { return fallback; } }
-function clampStr(s, max=4000){ s = String(s ?? ""); return s.length > max ? s.slice(0,max) : s; }
-function uid(){ return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16); }
-function normalizeUrl(url){ let u=String(url||"").trim(); if(!u) return ""; if(!/^https?:\/\//i.test(u)) u="https://"+u; return u; }
-function fmtDate(d){ if(!d) return ""; try{ const dt=new Date(d); if(Number.isNaN(dt.getTime())) return ""; return dt.toISOString().slice(0,10);}catch{return "";} }
-function prioRank(p){ if(p==="High") return 3; if(p==="Medium") return 2; return 1; }
-function escapeHtml(str){ return String(str ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
 
-let state = { version:1, workspaceName:"Team Hub", notes:"Lorem ipsum...", links:[], tasks:[] };
-let autosync = true;
-let isDirty = false;
-let searchQuery = "";
+/* Firestore refs */
+const configRef = doc(db, "meta", "config");
+const notesRef = doc(db, "notes", "shared");
+const linksCol = collection(db, "links");
+const tasksCol = collection(db, "tasks");
 
-const yearEl = $("#year"); yearEl.textContent = new Date().getFullYear();
-const footerName = $("#footerName");
-const footerMeta = $("#footerMeta");
-const lastSavedEl = $("#lastSaved");
-const syncPill = $("#syncPill");
+/* UI refs */
+const authOverlay = $("#authOverlay");
+const authForm = $("#authForm");
+const pinInput = $("#pinInput");
+const pinClearBtn = $("#pinClearBtn");
+const authMsg = $("#authMsg");
+const authFooterText = $("#authFooterText");
 
-const globalSearch = $("#globalSearch");
-const clearSearch = $("#clearSearch");
 const themeToggle = $("#themeToggle");
-const syncNowBtn = $("#syncNow");
-const exportBtn = $("#exportBtn");
-const importBtn = $("#importBtn");
-const importFile = $("#importFile");
+const themeLabel = $("#themeLabel");
 const logoutBtn = $("#logoutBtn");
 
-const navButtons = $$(".nav__item");
-const views = $$(".view");
+const globalSearch = $("#globalSearch");
 
-const dashboardList = $("#dashboardList");
-const dashboardLinks = $("#dashboardLinks");
-const sharedNotes = $("#sharedNotes");
-const sharedNotes2 = $("#sharedNotes2");
-const saveNotesBtn = $("#saveNotesBtn");
-const notesSaveBtn = $("#notesSaveBtn");
+const statLinks = $("#statLinks");
+const statTasks = $("#statTasks");
+const statOpen = $("#statOpen");
 
-const kpiPending = $("#kpiPending");
-const kpiProgress = $("#kpiProgress");
-const kpiDone = $("#kpiDone");
-
-const addTaskQuick = $("#addTaskQuick");
-const addLinkQuick = $("#addLinkQuick");
-
-const linkForm = $("#linkForm");
+const linksGrid = $("#linksGrid");
 const newLinkBtn = $("#newLinkBtn");
-const cancelLink = $("#cancelLink");
-const linkName = $("#linkName");
+const linkDialog = $("#linkDialog");
+const linkForm = $("#linkForm");
+const linkDialogTitle = $("#linkDialogTitle");
+const linkTitle = $("#linkTitle");
 const linkUrl = $("#linkUrl");
-const linkGroup = $("#linkGroup");
-const linksContainer = $("#linksContainer");
-const linkCount = $("#linkCount");
-const linkFilter = $("#linkFilter");
+const linkDesc = $("#linkDesc");
+const linkSaveBtn = $("#linkSaveBtn");
 
-const taskForm = $("#taskForm");
 const newTaskBtn = $("#newTaskBtn");
-const cancelTask = $("#cancelTask");
-const taskDescription = $("#taskDescription");
-const taskAssignedTo = $("#taskAssignedTo");
+const taskDialog = $("#taskDialog");
+const taskForm = $("#taskForm");
+const taskDialogTitle = $("#taskDialogTitle");
+const taskDesc = $("#taskDesc");
+const taskAssigned = $("#taskAssigned");
 const taskStatus = $("#taskStatus");
 const taskPriority = $("#taskPriority");
 const taskDue = $("#taskDue");
 const taskNotes = $("#taskNotes");
-const tasksTableBody = $("#tasksTableBody");
+const taskCreateBtn = $("#taskCreateBtn");
+
+const filterStatus = $("#filterStatus");
+const filterPriority = $("#filterPriority");
+const sortTasks = $("#sortTasks");
+const tasksBody = $("#tasksBody");
 const tasksEmpty = $("#tasksEmpty");
 const taskCount = $("#taskCount");
-const statusFilter = $("#statusFilter");
-const priorityFilter = $("#priorityFilter");
-const sortTasks = $("#sortTasks");
 
-const autosyncToggle = $("#autosyncToggle");
-const workspaceNameInput = $("#workspaceName");
-const changePinHint = $("#changePinHint");
-const clearAllBtn = $("#clearAll");
+const notesBox = $("#notesBox");
+const notesStatus = $("#notesStatus");
 
-// Login modal
-const loginModal = $("#loginModal");
-const loginForm = $("#loginForm");
-const pinInput = $("#pinInput");
-const loginErr = $("#loginErr");
+const exportBtn = $("#exportBtn");
+const importFile = $("#importFile");
 
-function setTheme(mode){
-  if(mode !== "dark" && mode !== "light") mode = "dark";
-  document.documentElement.setAttribute("data-theme", mode);
-  localStorage.setItem(LS_THEME, mode);
+/* Local state (in-memory only) */
+let remotePinHash = null;
+let links = []; // {id, title, url, desc, order, updatedAt}
+let tasks = []; // {id, ...}
+let notesText = "";
+let isUnlocked = false;
+let dragId = null;
+let searchQuery = "";
+
+/* Theme */
+function applyTheme(theme){
+  document.documentElement.dataset.theme = theme;
+  themeLabel.textContent = theme === "light" ? "Light" : "Dark";
 }
-function initTheme(){
-  const saved = localStorage.getItem(LS_THEME);
-  if(saved){ setTheme(saved); return; }
-  const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
-  setTheme(prefersLight ? "light" : "dark");
+function loadTheme(){
+  const t = localStorage.getItem(LS_THEME) || "dark";
+  applyTheme(t);
 }
-themeToggle.addEventListener("click", ()=>{
-  const cur = document.documentElement.getAttribute("data-theme") || "dark";
-  setTheme(cur === "dark" ? "light" : "dark");
-});
-
-function getToken(){ return localStorage.getItem(LS_TOKEN) || ""; }
-function setToken(t){ if(t) localStorage.setItem(LS_TOKEN, t); else localStorage.removeItem(LS_TOKEN); }
-function openLogin(){ loginErr.textContent=""; pinInput.value=""; loginModal.classList.add("is-open"); loginModal.setAttribute("aria-hidden","false"); setTimeout(()=>pinInput.focus(),50); }
-function closeLogin(){ loginModal.classList.remove("is-open"); loginModal.setAttribute("aria-hidden","true"); }
-$$("[data-close='login']").forEach(el=>el.addEventListener("click", closeLogin));
-
-async function api(path, {method="GET", body=null, token=null}={}){
-  const headers = { "Content-Type":"application/json" };
-  const t = token ?? getToken();
-  if(t) headers["Authorization"] = "Bearer " + t;
-  const res = await fetch(API_BASE + path, { method, headers, body: body ? JSON.stringify(body) : null });
-  const text = await res.text();
-  const data = text ? safeJsonParse(text, { raw:text }) : null;
-  if(!res.ok){
-    const msg = (data && (data.error || data.message)) ? (data.error || data.message) : `HTTP ${res.status}`;
-    const err = new Error(msg); err.status=res.status; err.data=data; throw err;
-  }
-  return data;
+function toggleTheme(){
+  const cur = document.documentElement.dataset.theme || "dark";
+  const next = cur === "dark" ? "light" : "dark";
+  localStorage.setItem(LS_THEME, next);
+  applyTheme(next);
 }
 
-loginForm.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  loginErr.textContent = "";
-  const pin = String(pinInput.value || "").trim();
-  if(pin.length < 4){ loginErr.textContent="PIN must be at least 4 digits."; return; }
-  try{
-    const out = await api("/login", {method:"POST", body:{ pin }, token:""});
-    setToken(out.token);
-    closeLogin();
-    toast("Unlocked");
-    await syncFromServer();
-  }catch(err){
-    loginErr.textContent = err.message || "Login failed.";
-    setToken("");
-  }
-});
-logoutBtn.addEventListener("click", ()=>{ setToken(""); toast("Logged out"); openLogin(); });
-
-function saveLocal(){
-  localStorage.setItem(LS_KEY, JSON.stringify(state));
-  localStorage.setItem(LS_NAME, state.workspaceName || "Team Hub");
-}
-function loadLocal(){
-  const saved = safeJsonParse(localStorage.getItem(LS_KEY), null);
-  if(saved && typeof saved === "object") state = { ...state, ...saved };
-  const ws = localStorage.getItem(LS_NAME);
-  if(ws) state.workspaceName = ws;
-}
-let syncTimer=null;
-function scheduleSync(){ clearTimeout(syncTimer); syncTimer=setTimeout(()=>syncToServer().catch(()=>{}),650); }
-
-function setSyncPill(mode,text){ syncPill.innerHTML = `<span class="dot dot--${mode}"></span> ${escapeHtml(text)}`; }
-
-function markDirty(reason=""){
-  isDirty = true;
-  lastSavedEl.textContent = "Unsaved changes" + (reason ? ` • ${reason}` : "");
-  saveLocal();
-  if(autosync) scheduleSync();
-}
-
-async function syncFromServer(){
-  if(!getToken()){ openLogin(); return; }
-  try{
-    const data = await api("/state",{method:"GET"});
-    if(data && data.state){
-      state = { ...state, ...data.state };
-      isDirty=false;
-      saveLocal();
-      setSyncPill("ok","Synced");
-      lastSavedEl.textContent = "Synced just now";
-      renderAll();
-    }
-  }catch(err){
-    if(err.status===401){ setToken(""); openLogin(); return; }
-    setSyncPill("warn","Using local cache");
-    lastSavedEl.textContent = "Offline/local mode";
-  }
-}
-
-async function syncToServer(){
-  if(!autosync || !isDirty || !getToken()) return;
-  try{
-    setSyncPill("warn","Syncing...");
-    const out = await api("/state",{method:"POST", body:{ state }});
-    isDirty=false;
-    setSyncPill("ok","Synced");
-    lastSavedEl.textContent = "Saved " + new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
-    if(out && out.state){
-      state = { ...state, ...out.state };
-      saveLocal();
-      renderAll();
-    }
-  }catch(err){
-    if(err.status===401){ setToken(""); openLogin(); return; }
-    setSyncPill("warn","Sync failed (local)");
-    lastSavedEl.textContent = "Saved locally";
-  }
-}
-
-syncNowBtn.addEventListener("click", async ()=>{
-  if(!getToken()){ openLogin(); return; }
-  try{ await syncToServer(); await syncFromServer(); toast("Synced"); } catch{ toast("Sync failed (local)"); }
-});
-
-function setView(view){
-  navButtons.forEach(b=>b.classList.toggle("is-active", b.dataset.view===view));
-  views.forEach(v=>v.classList.toggle("is-active", v.id===`view-${view}`));
-  renderAll();
-}
-navButtons.forEach(btn=>btn.addEventListener("click", ()=>setView(btn.dataset.view)));
-
-globalSearch.addEventListener("input", ()=>{ searchQuery = globalSearch.value.trim().toLowerCase(); renderAll(); });
-clearSearch.addEventListener("click", ()=>{ globalSearch.value=""; searchQuery=""; renderAll(); });
-
-newLinkBtn.addEventListener("click", ()=>{ linkForm.classList.toggle("is-hidden"); if(!linkForm.classList.contains("is-hidden")) linkName.focus(); });
-addLinkQuick.addEventListener("click", ()=>{ setView("links"); linkForm.classList.remove("is-hidden"); linkName.focus(); });
-cancelLink.addEventListener("click", ()=>{ linkForm.classList.add("is-hidden"); });
-
-linkForm.addEventListener("submit", (e)=>{
-  e.preventDefault();
-  const name = clampStr(linkName.value.trim(),80);
-  const url = normalizeUrl(linkUrl.value.trim());
-  const group = clampStr(linkGroup.value.trim(),40);
-  if(!name || !url) return;
-  state.links.push({ id:uid(), name, url, group, createdAt:nowIso(), updatedAt:nowIso() });
-  linkName.value=""; linkUrl.value=""; linkGroup.value="";
-  linkForm.classList.add("is-hidden");
-  markDirty("link added");
-  renderLinks(); renderDashboard();
-});
-
-function setLinkFilterOptions(){
-  const groups=[...new Set(state.links.map(l=>l.group).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  const cur = linkFilter.value || "";
-  linkFilter.innerHTML = `<option value="">All groups</option>` + groups.map(g=>`<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
-  if(groups.includes(cur)) linkFilter.value = cur;
-}
-linkFilter.addEventListener("change", renderLinks);
-
-function deleteLink(id){ state.links = state.links.filter(l=>l.id!==id); markDirty("link deleted"); renderLinks(); renderDashboard(); }
-function editLink(id){
-  const l = state.links.find(x=>x.id===id); if(!l) return;
-  const name = prompt("Edit link name:", l.name); if(name===null) return;
-  const url = prompt("Edit URL:", l.url); if(url===null) return;
-  const group = prompt("Edit group (optional):", l.group || ""); if(group===null) return;
-  l.name = clampStr(name.trim(),80) || l.name;
-  l.url = normalizeUrl(url.trim()) || l.url;
-  l.group = clampStr(group.trim(),40);
-  l.updatedAt = nowIso();
-  markDirty("link updated");
-  renderLinks(); renderDashboard();
-}
-
-function setupLinkDnD(container){
-  const isFiltered = !!searchQuery || !!(linkFilter.value || "");
-  $$(".drag", container).forEach(card=>{
-    card.addEventListener("dragstart", (e)=>{ if(isFiltered){e.preventDefault(); return;} card.classList.add("is-drag"); e.dataTransfer.effectAllowed="move"; e.dataTransfer.setData("text/plain", card.dataset.linkId); });
-    card.addEventListener("dragover", (e)=>{ if(isFiltered) return; e.preventDefault(); e.dataTransfer.dropEffect="move"; });
-    card.addEventListener("drop", (e)=>{
-      if(isFiltered) return;
-      e.preventDefault();
-      const fromId = e.dataTransfer.getData("text/plain");
-      const toId = card.dataset.linkId;
-      if(!fromId || !toId || fromId===toId) return;
-      const from = state.links.findIndex(l=>l.id===fromId);
-      const to = state.links.findIndex(l=>l.id===toId);
-      if(from<0 || to<0) return;
-      const [m] = state.links.splice(from,1);
-      state.links.splice(to,0,m);
-      markDirty("links reordered");
-      renderLinks(); renderDashboard();
+/* Bootstrap Firestore docs (clean slate) */
+async function ensureBootstrap(){
+  const cfgSnap = await getDoc(configRef);
+  if (!cfgSnap.exists()){
+    const pinHash = await sha256Hex(DEFAULT_PIN);
+    await setDoc(configRef, {
+      pinHash,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      version: 1
     });
-    card.addEventListener("dragend", ()=>card.classList.remove("is-drag"));
+  }
+
+  const notesSnap = await getDoc(notesRef);
+  if (!notesSnap.exists()){
+    await setDoc(notesRef, {
+      text: "",
+      updatedAt: serverTimestamp()
+    });
+  }
+}
+
+/* Auth */
+function showAuth(msg=""){
+  authOverlay.hidden = false;
+  authMsg.textContent = msg;
+  setTimeout(()=> pinInput?.focus(), 50);
+}
+function hideAuth(){
+  authOverlay.hidden = true;
+  authMsg.textContent = "";
+}
+function setAuthFooter(s){ authFooterText.textContent = s; }
+
+async function fetchRemotePinHash(){
+  const snap = await getDoc(configRef);
+  remotePinHash = snap.data()?.pinHash || null;
+  return remotePinHash;
+}
+function startConfigWatch(){
+  if (unsubConfig) unsubConfig();
+
+  unsubConfig = onSnapshot(configRef, (snap)=>{
+    const ph = snap.data()?.pinHash || null;
+    if (ph && ph !== remotePinHash){
+      remotePinHash = ph;
+      const cached = localStorage.getItem(LS_PINHASH);
+
+      // If PIN changed while unlocked or cached, require re-entry.
+      if (isUnlocked && (!cached || cached !== remotePinHash)){
+        lock();
+      }
+    } else {
+      remotePinHash = ph;
+    }
   });
+}
+
+
+
+async function tryAutoUnlock(){
+  const cached = localStorage.getItem(LS_PINHASH);
+  if (cached && remotePinHash && cached === remotePinHash){
+    isUnlocked = true;
+    hideAuth();
+    return true;
+  }
+  return false;
+}
+
+async function unlockWithPin(pin){
+  const hash = await sha256Hex(pin);
+  if (!remotePinHash){
+    await fetchRemotePinHash();
+  }
+  if (hash && remotePinHash && hash === remotePinHash){
+    localStorage.setItem(LS_PINHASH, remotePinHash);
+    isUnlocked = true;
+    hideAuth();
+    return true;
+  }
+  return false;
+}
+
+function lock(){
+  isUnlocked = false;
+  localStorage.removeItem(LS_PINHASH);
+  showAuth("Locked. Enter PIN to continue.");
+}
+
+/* Realtime subscriptions */
+let unsubLinks = null;
+let unsubTasks = null;
+let unsubNotes = null;
+let unsubConfig = null;
+
+function startSubscriptions(){
+  if (unsubLinks) unsubLinks();
+  if (unsubTasks) unsubTasks();
+  if (unsubNotes) unsubNotes();
+
+  // Config watcher is started once in init (keeps remotePinHash fresh)
+  unsubLinks = onSnapshot(query(linksCol, orderBy("order", "asc")), (snap)=>{
+    links = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+    renderLinks();
+    renderStats();
+  });
+
+  unsubTasks = onSnapshot(query(tasksCol, orderBy("updatedAt", "desc")), (snap)=>{
+    tasks = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+    renderTasks();
+    renderStats();
+  });
+
+  unsubNotes = onSnapshot(notesRef, (snap)=>{
+    const data = snap.data() || {};
+    notesText = String(data.text ?? "");
+    if (notesBox.value !== notesText) notesBox.value = notesText;
+    notesStatus.textContent = "Synced";
+  });
+}
+/* Render: stats */
+function renderStats(){
+  statLinks.textContent = String(links.length);
+  statTasks.textContent = String(tasks.length);
+  const open = tasks.filter(t => (t.status ?? "todo") !== "done").length;
+  statOpen.textContent = String(open);
+}
+
+/* Links */
+function linkCardHTML(l){
+  const title = escapeHtml(l.title || "Lorem ipsum");
+  const desc = escapeHtml(l.desc || "Lorem ipsum");
+  const url = escapeHtml(l.url || "#");
+  return `
+    <div class="linkCard" draggable="true" data-id="${l.id}">
+      <div class="linkCard__top">
+        <div>
+          <div class="linkCard__title">${title}</div>
+          <div class="linkCard__url">${url}</div>
+        </div>
+        <div class="linkCard__actions">
+          <button class="linkCard__btn" data-act="edit" title="Edit">
+            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0 0-2.1L15.6 4.5a1.5 1.5 0 0 0-2.1 0L3 15v5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="linkCard__btn" data-act="del" title="Delete">
+            <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M4 7h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 7l1-2h10l1 2v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="linkCard__desc">${desc}</div>
+      <a class="linkCard__open" href="${url}" target="_blank" rel="noopener">Open ↗</a>
+    </div>
+  `;
 }
 
 function renderLinks(){
-  setLinkFilterOptions();
-  const filter = (linkFilter.value || "").toLowerCase();
-  let links=[...state.links];
-  if(filter) links = links.filter(l=>(l.group||"").toLowerCase()===filter);
-  if(searchQuery) links = links.filter(l => (l.name||"").toLowerCase().includes(searchQuery) || (l.url||"").toLowerCase().includes(searchQuery) || (l.group||"").toLowerCase().includes(searchQuery));
-  linkCount.textContent = `${links.length} link${links.length===1?"":"s"}`;
-  linksContainer.innerHTML = links.map(l=>`
-    <div class="link drag" draggable="true" data-link-id="${escapeHtml(l.id)}">
-      <div class="link__top">
-        <div>
-          <div class="link__name">${escapeHtml(l.name)}</div>
-          <div class="link__group">${escapeHtml(l.group || "Lorem ipsum")}</div>
-        </div>
-        <div class="link__btns">
-          <button class="iconbtn" type="button" title="Edit" data-act="edit" data-id="${escapeHtml(l.id)}">✎</button>
-          <button class="iconbtn" type="button" title="Delete" data-act="del" data-id="${escapeHtml(l.id)}">🗑</button>
-        </div>
-      </div>
-      <a class="link__open" href="${escapeHtml(l.url)}" target="_blank" rel="noopener">Open ↗</a>
-    </div>
-  `).join("");
-  $$("[data-act='del']", linksContainer).forEach(btn=>btn.addEventListener("click", ()=>deleteLink(btn.dataset.id)));
-  $$("[data-act='edit']", linksContainer).forEach(btn=>btn.addEventListener("click", ()=>editLink(btn.dataset.id)));
-  setupLinkDnD(linksContainer);
+  const q = searchQuery.trim().toLowerCase();
+  const filtered = q
+    ? links.filter(l => {
+        const s = `${l.title||""} ${l.desc||""} ${l.url||""}`.toLowerCase();
+        return s.includes(q);
+      })
+    : links;
+
+  linksGrid.innerHTML = filtered.map(linkCardHTML).join("") || `<div class="empty">No links yet. Click <b>+ New link</b>.</div>`;
 }
 
-newTaskBtn.addEventListener("click", ()=>{ taskForm.classList.toggle("is-hidden"); if(!taskForm.classList.contains("is-hidden")) taskDescription.focus(); });
-addTaskQuick.addEventListener("click", ()=>{ setView("tasks"); taskForm.classList.remove("is-hidden"); taskDescription.focus(); });
-cancelTask.addEventListener("click", ()=>{ taskForm.classList.add("is-hidden"); });
+let editingLinkId = null;
+function openLinkDialog(mode, link=null){
+  editingLinkId = mode === "edit" ? link?.id : null;
+  linkDialogTitle.textContent = mode === "edit" ? "Edit link" : "New link";
+  linkSaveBtn.textContent = mode === "edit" ? "Save" : "Create";
+  linkTitle.value = link?.title || "";
+  linkUrl.value = link?.url || "";
+  linkDesc.value = link?.desc || "";
+  linkDialog.showModal();
+  setTimeout(()=> linkTitle.focus(), 30);
+}
 
-taskForm.addEventListener("submit", (e)=>{
-  e.preventDefault();
-  const desc = clampStr(taskDescription.value.trim(),200);
-  const who = clampStr(taskAssignedTo.value.trim(),80);
-  const st = taskStatus.value;
-  const pr = taskPriority.value;
-  const due = taskDue.value ? taskDue.value : "";
-  const notes = clampStr(taskNotes.value.trim(),2000);
-  if(!desc || !who) return;
-  state.tasks.unshift({ id:uid(), description:desc, assignedTo:who, status:st, priority:pr, dueDate:due, notes, createdAt:nowIso(), updatedAt:nowIso() });
-  taskDescription.value=""; taskAssignedTo.value=""; taskStatus.value="Pending"; taskPriority.value="Medium"; taskDue.value=""; taskNotes.value="";
-  taskForm.classList.add("is-hidden");
-  markDirty("task added");
-  renderTasks(); renderDashboard();
-});
+async function createLink(data){
+  const maxOrder = links.reduce((m,l)=> Math.max(m, Number(l.order||0)), 0);
+  const order = (isFinite(maxOrder) ? maxOrder : 0) + 100;
+  await addDoc(linksCol, {
+    title: data.title || "Lorem ipsum",
+    url: data.url || "#",
+    desc: data.desc || "Lorem ipsum",
+    order,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+}
 
-statusFilter.addEventListener("change", renderTasks);
-priorityFilter.addEventListener("change", renderTasks);
-sortTasks.addEventListener("change", renderTasks);
+async function updateLink(id, data){
+  await updateDoc(doc(db, "links", id), {
+    title: data.title || "Lorem ipsum",
+    url: data.url || "#",
+    desc: data.desc || "Lorem ipsum",
+    updatedAt: serverTimestamp()
+  });
+}
 
-function updateTask(id, patch){ const t = state.tasks.find(x=>x.id===id); if(!t) return; Object.assign(t, patch); t.updatedAt = nowIso(); markDirty("task updated"); }
-function deleteTask(id){ if(!confirm("Delete this task?")) return; state.tasks = state.tasks.filter(t=>t.id!==id); markDirty("task deleted"); renderTasks(); renderDashboard(); }
+async function deleteLinkById(id){
+  await deleteDoc(doc(db, "links", id));
+}
 
-function renderDashboardKpis(){
-  kpiPending.textContent = state.tasks.filter(t=>t.status==="Pending").length;
-  kpiProgress.textContent = state.tasks.filter(t=>t.status==="In Progress").length;
-  kpiDone.textContent = state.tasks.filter(t=>t.status==="Completed").length;
+async function persistLinkOrder(idsInOrder){
+  const batch = writeBatch(db);
+  idsInOrder.forEach((id, idx)=>{
+    batch.update(doc(db,"links", id), { order: idx*100, updatedAt: serverTimestamp() });
+  });
+  await batch.commit();
+}
+
+/* Tasks */
+const PRIORITY_SCORE = { low:1, med:2, high:3 };
+function statusBadge(status){
+  const s = status || "todo";
+  const map = {
+    todo: { label:"To do", dot:"rgba(255,255,255,.35)" },
+    doing:{ label:"Doing", dot:"rgba(16,184,215,.65)" },
+    blocked:{ label:"Blocked", dot:"rgba(255,207,90,.7)" },
+    done:{ label:"Done", dot:"rgba(62,227,138,.7)" }
+  };
+  const it = map[s] || map.todo;
+  return `<span class="badge"><span class="dot" style="background:${it.dot};border-color:transparent"></span>${it.label}</span>`;
+}
+function priorityBadge(p){
+  const v = p || "med";
+  const map = {
+    low:{ label:"Low", dot:"rgba(255,255,255,.35)" },
+    med:{ label:"Medium", dot:"rgba(16,184,215,.55)" },
+    high:{ label:"High", dot:"rgba(255,91,107,.65)" }
+  };
+  const it = map[v] || map.med;
+  return `<span class="badge"><span class="dot" style="background:${it.dot};border-color:transparent"></span>${it.label}</span>`;
+}
+
+function parseFSDate(x){
+  // x can be string(YYYY-MM-DD) or Firestore Timestamp-like
+  if (!x) return null;
+  if (typeof x === "string") return x;
+  if (x.seconds) {
+    const d = new Date(x.seconds * 1000);
+    const mm = String(d.getMonth()+1).padStart(2,"0");
+    const dd = String(d.getDate()).padStart(2,"0");
+    return `${d.getFullYear()}-${mm}-${dd}`;
+  }
+  return null;
 }
 
 function renderTasks(){
-  const sf = statusFilter.value || "";
-  const pf = priorityFilter.value || "";
-  const sort = sortTasks.value || "updated_desc";
-  let items=[...state.tasks];
-  if(sf) items = items.filter(t=>t.status===sf);
-  if(pf) items = items.filter(t=>t.priority===pf);
-  if(searchQuery) items = items.filter(t => (t.description||"").toLowerCase().includes(searchQuery) || (t.assignedTo||"").toLowerCase().includes(searchQuery) || (t.notes||"").toLowerCase().includes(searchQuery));
-  items.sort((a,b)=>{
-    if(sort==="due_asc"){ const ad=a.dueDate||"9999-12-31"; const bd=b.dueDate||"9999-12-31"; return ad.localeCompare(bd); }
-    if(sort==="priority_desc"){ return prioRank(b.priority)-prioRank(a.priority); }
-    if(sort==="assignee_asc"){ return (a.assignedTo||"").localeCompare(b.assignedTo||""); }
-    return (b.updatedAt||"").localeCompare(a.updatedAt||"");
+  const q = searchQuery.trim().toLowerCase();
+  const st = filterStatus.value;
+  const pr = filterPriority.value;
+  const sortMode = sortTasks.value;
+
+  let list = [...tasks];
+
+  // search
+  if (q){
+    list = list.filter(t => {
+      const s = `${t.desc||""} ${t.assigned||""} ${t.notes||""} ${t.status||""} ${t.priority||""}`.toLowerCase();
+      return s.includes(q);
+    });
+  }
+
+  // filters
+  if (st !== "all") list = list.filter(t => (t.status||"todo") === st);
+  if (pr !== "all") list = list.filter(t => (t.priority||"med") === pr);
+
+  // sort
+  list.sort((a,b)=>{
+    if (sortMode === "dueAsc"){
+      const da = parseFSDate(a.due) || "9999-12-31";
+      const dbb = parseFSDate(b.due) || "9999-12-31";
+      return da.localeCompare(dbb);
+    }
+    if (sortMode === "priorityDesc"){
+      return (PRIORITY_SCORE[b.priority||"med"]||2) - (PRIORITY_SCORE[a.priority||"med"]||2);
+    }
+    if (sortMode === "createdDesc"){
+      const ca = a.createdAt?.seconds || 0;
+      const cb = b.createdAt?.seconds || 0;
+      return cb - ca;
+    }
+    // updatedDesc default
+    const ua = a.updatedAt?.seconds || 0;
+    const ub = b.updatedAt?.seconds || 0;
+    return ub - ua;
   });
-  taskCount.textContent = `${items.length} task${items.length===1?"":"s"}`;
-  if(items.length===0){ tasksTableBody.innerHTML=""; tasksEmpty.classList.remove("is-hidden"); renderDashboardKpis(); return; }
-  tasksEmpty.classList.add("is-hidden");
-  tasksTableBody.innerHTML = items.map(t=>`
-    <div class="row" data-id="${escapeHtml(t.id)}">
-      <div><input class="cell-input" data-f="description" value="${escapeHtml(t.description)}"/></div>
-      <div><input class="cell-input" data-f="assignedTo" value="${escapeHtml(t.assignedTo)}"/></div>
-      <div>
-        <select class="cell-input" data-f="status">
-          <option ${t.status==="Pending"?"selected":""}>Pending</option>
-          <option ${t.status==="In Progress"?"selected":""}>In Progress</option>
-          <option ${t.status==="Completed"?"selected":""}>Completed</option>
-        </select>
-      </div>
-      <div>
-        <select class="cell-input" data-f="priority">
-          <option value="Low" ${t.priority==="Low"?"selected":""}>Low</option>
-          <option value="Medium" ${t.priority==="Medium"?"selected":""}>Medium</option>
-          <option value="High" ${t.priority==="High"?"selected":""}>High</option>
-        </select>
-      </div>
-      <div><input class="cell-input" data-f="dueDate" type="date" value="${escapeHtml(fmtDate(t.dueDate))}"/></div>
-      <div><input class="cell-input" data-f="notes" value="${escapeHtml(t.notes || "")}" placeholder="Lorem ipsum..."/></div>
-      <div><button class="btntrash" type="button" title="Delete">🗑</button></div>
-    </div>
-  `).join("");
-  $$(".row", tasksTableBody).forEach(row=>{
-    const id=row.dataset.id;
-    row.querySelector(".btntrash").addEventListener("click", ()=>deleteTask(id));
-    row.querySelectorAll("[data-f]").forEach(inp=>{
-      inp.addEventListener("change", ()=>{
-        const f = inp.dataset.f;
-        let v = inp.value;
-        if(f==="dueDate") v = v || "";
-        updateTask(id, {[f]: clampStr(v, f==="notes"?2000:200)});
-        renderDashboardKpis();
-      });
+
+  taskCount.textContent = String(list.length);
+
+  tasksBody.innerHTML = list.map(t=>{
+    const due = parseFSDate(t.due) || "";
+    const safeDesc = escapeHtml(t.desc || "");
+    const safeAssigned = escapeHtml(t.assigned || "");
+    const safeNotes = escapeHtml(t.notes || "");
+    return `
+      <tr data-id="${t.id}">
+        <td><input class="cellInput" data-field="desc" value="${safeDesc}" placeholder="Task description" /></td>
+        <td><input class="cellInput" data-field="assigned" value="${safeAssigned}" placeholder="Name" /></td>
+        <td>
+          <select class="select" data-field="status">
+            <option value="todo" ${t.status==="todo"?"selected":""}>To do</option>
+            <option value="doing" ${t.status==="doing"?"selected":""}>Doing</option>
+            <option value="blocked" ${t.status==="blocked"?"selected":""}>Blocked</option>
+            <option value="done" ${t.status==="done"?"selected":""}>Done</option>
+          </select>
+        </td>
+        <td>
+          <select class="select" data-field="priority">
+            <option value="low" ${t.priority==="low"?"selected":""}>Low</option>
+            <option value="med" ${(!t.priority || t.priority==="med")?"selected":""}>Medium</option>
+            <option value="high" ${t.priority==="high"?"selected":""}>High</option>
+          </select>
+        </td>
+        <td><input class="cellInput" data-field="due" type="date" value="${escapeHtml(due)}" /></td>
+        <td><input class="cellInput" data-field="notes" value="${safeNotes}" placeholder="Notes" /></td>
+        <td class="th--right">
+          <div class="actionsRight">
+            <button class="smallBtn danger" data-act="del">Delete</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  tasksEmpty.hidden = list.length !== 0;
+}
+
+async function createTask(data){
+  await addDoc(tasksCol, {
+    desc: data.desc || "Lorem ipsum",
+    assigned: data.assigned || "",
+    status: data.status || "todo",
+    priority: data.priority || "med",
+    due: data.due || "",
+    notes: data.notes || "",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+}
+
+async function patchTask(id, patch){
+  patch.updatedAt = serverTimestamp();
+  await updateDoc(doc(db, "tasks", id), patch);
+}
+
+async function deleteTask(id){
+  await deleteDoc(doc(db, "tasks", id));
+}
+
+/* Notes (debounced save) */
+let notesTimer = null;
+function scheduleNotesSave(){
+  notesStatus.textContent = "Typing…";
+  if (notesTimer) clearTimeout(notesTimer);
+  notesTimer = setTimeout(async ()=>{
+    try{
+      await updateDoc(notesRef, { text: notesBox.value, updatedAt: serverTimestamp() });
+      notesStatus.textContent = "Saved";
+    }catch(e){
+      notesStatus.textContent = "Save failed";
+      console.error(e);
+    }
+  }, 450);
+}
+
+/* Export / Import */
+function download(filename, text){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type:"application/json"}));
+  a.download = filename;
+  a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+}
+
+function stateAsJSON(){
+  const out = {
+    links: links.map(l => ({
+      title:l.title||"",
+      url:l.url||"",
+      desc:l.desc||"",
+      order:Number(l.order||0)
+    })),
+    tasks: tasks.map(t => ({
+      desc:t.desc||"",
+      assigned:t.assigned||"",
+      status:t.status||"todo",
+      priority:t.priority||"med",
+      due: parseFSDate(t.due) || "",
+      notes:t.notes||""
+    })),
+    notes: notesBox.value || ""
+  };
+  return JSON.stringify(out, null, 2);
+}
+
+async function importFromJSON(obj){
+  const batch = writeBatch(db);
+
+  // wipe existing (batched deletes in chunks)
+  // (safe for small teams; for huge datasets you'd paginate)
+  for (const l of links) batch.delete(doc(db,"links", l.id));
+  for (const t of tasks) batch.delete(doc(db,"tasks", t.id));
+  batch.set(notesRef, { text: String(obj.notes||""), updatedAt: serverTimestamp() }, { merge:true });
+
+  // add new docs
+  (obj.links || []).forEach((l, idx)=>{
+    const ref = doc(collection(db,"links"));
+    batch.set(ref, {
+      title: String(l.title || "Lorem ipsum"),
+      url: String(l.url || "#"),
+      desc: String(l.desc || "Lorem ipsum"),
+      order: Number.isFinite(Number(l.order)) ? Number(l.order) : idx*100,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
     });
   });
-  renderDashboardKpis();
+
+  (obj.tasks || []).forEach((t)=>{
+    const ref = doc(collection(db,"tasks"));
+    batch.set(ref, {
+      desc: String(t.desc || "Lorem ipsum"),
+      assigned: String(t.assigned || ""),
+      status: String(t.status || "todo"),
+      priority: String(t.priority || "med"),
+      due: String(t.due || ""),
+      notes: String(t.notes || ""),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  });
+
+  await batch.commit();
 }
 
-function renderDashboard(){
-  renderDashboardKpis();
-  const latest=[...state.tasks].sort((a,b)=>(b.updatedAt||"").localeCompare(a.updatedAt||"")).slice(0,6);
-  dashboardList.innerHTML = latest.length ? latest.map(t=>`
-    <div class="item">
-      <div>
-        <div class="item__title">${escapeHtml(t.description)}</div>
-        <div class="item__meta">${escapeHtml(t.assignedTo)} • ${t.dueDate?`Due ${escapeHtml(t.dueDate)}`:"No due date"}</div>
-      </div>
-      <div class="badge">${escapeHtml(t.status)}</div>
-    </div>
-  `).join("") : `<div class="empty">No tasks yet. Click “+ Task” to create one.</div>`;
-  const topLinks=state.links.slice(0,10);
-  dashboardLinks.innerHTML = topLinks.length ? topLinks.map(l=>`<a class="link__open" href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.name)} ↗</a>`).join("") : `<div class="empty">No links yet. Click “+ Link”.</div>`;
-}
+/* Events */
+themeToggle.addEventListener("click", toggleTheme);
+logoutBtn.addEventListener("click", lock);
 
-function syncNotesFields(){ sharedNotes.value = state.notes || ""; sharedNotes2.value = state.notes || ""; }
-function pullNotesFromUI(){
-  const v = sharedNotes2.value && sharedNotes2.value !== (state.notes||"") ? sharedNotes2.value : sharedNotes.value;
-  state.notes = clampStr(v,20000) || "Lorem ipsum...";
-  syncNotesFields();
-  markDirty("notes saved");
-}
-saveNotesBtn.addEventListener("click", pullNotesFromUI);
-notesSaveBtn.addEventListener("click", pullNotesFromUI);
-sharedNotes.addEventListener("input", ()=>{ state.notes = sharedNotes.value; markDirty("notes"); });
-sharedNotes2.addEventListener("input", ()=>{ state.notes = sharedNotes2.value; markDirty("notes"); });
-
-exportBtn.addEventListener("click", ()=>{
-  const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a"); a.href=url; a.download="teamhub-export.json"; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  toast("Exported");
-});
-importBtn.addEventListener("click", ()=>importFile.click());
-importFile.addEventListener("change", async (e)=>{
-  const file=e.target.files && e.target.files[0]; if(!file) return;
-  try{
-    const text=await file.text();
-    const obj=safeJsonParse(text,null);
-    if(!obj || typeof obj!=="object") throw new Error("Invalid JSON");
-    state={...state,...obj};
-    state.workspaceName=clampStr(state.workspaceName||"Team Hub",50);
-    saveLocal(); markDirty("imported"); renderAll(); toast("Imported");
-  }catch{ toast("Import failed"); } finally { importFile.value=""; }
+pinClearBtn.addEventListener("click", ()=>{
+  localStorage.removeItem(LS_PINHASH);
+  authMsg.textContent = "Forgotten on this device.";
 });
 
-autosyncToggle.addEventListener("change", ()=>{ autosync=!!autosyncToggle.checked; toast(autosync?"Autosync on":"Autosync off"); if(autosync) scheduleSync(); });
-workspaceNameInput.addEventListener("change", ()=>{ state.workspaceName=clampStr(workspaceNameInput.value.trim(),50)||"Team Hub"; footerName.textContent=state.workspaceName; document.querySelector(".brand__title").textContent=state.workspaceName; markDirty("workspace name"); });
-changePinHint.addEventListener("click", ()=>alert("In Netlify: Site settings → Environment variables\nSet ADMIN_PIN (e.g., 1234)\nSet AUTH_SECRET (random long string)\nRedeploy."));
-clearAllBtn.addEventListener("click", async ()=>{
-  if(!confirm("Clear all data (local + server)?")) return;
-  state.links=[]; state.tasks=[]; state.notes="Lorem ipsum...";
-  saveLocal(); markDirty("cleared"); renderAll();
-  try{ await api("/clear",{method:"POST"}); toast("Cleared (server)"); }catch{ toast("Cleared (local)"); }
+authForm.addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  authMsg.textContent = "Checking…";
+  const ok = await unlockWithPin(pinInput.value.trim());
+  if (ok){
+    authMsg.textContent = "";
+    pinInput.value = "";
+    // ensure subscriptions only after unlock
+    startSubscriptions();
+  } else {
+    authMsg.textContent = "Wrong PIN.";
+    pinInput.select();
+  }
 });
 
-function renderAll(){
-  footerName.textContent = state.workspaceName || "Team Hub";
-  document.querySelector(".brand__title").textContent = state.workspaceName || "Team Hub";
-  workspaceNameInput.value = state.workspaceName || "Team Hub";
-  syncNotesFields();
-  renderDashboard();
+globalSearch.addEventListener("input", ()=>{
+  searchQuery = globalSearch.value || "";
   renderLinks();
   renderTasks();
-  footerMeta.textContent = `© ${new Date().getFullYear()} • ${state.workspaceName || "Team Hub"}`;
+});
+
+newLinkBtn.addEventListener("click", ()=> openLinkDialog("new"));
+linkForm.addEventListener("submit", async (e)=>{
+  e.preventDefault();
+});
+linkDialog.addEventListener("close", async ()=>{
+  if (linkDialog.returnValue !== "ok") return;
+  const data = {
+    title: linkTitle.value.trim() || "Lorem ipsum",
+    url: linkUrl.value.trim() || "#",
+    desc: linkDesc.value.trim() || "Lorem ipsum"
+  };
+  try{
+    if (editingLinkId) await updateLink(editingLinkId, data);
+    else await createLink(data);
+  }catch(err){ console.error(err); }
+  editingLinkId = null;
+});
+
+linksGrid.addEventListener("click", async (e)=>{
+  const card = e.target.closest(".linkCard");
+  if (!card) return;
+  const id = card.dataset.id;
+  const actBtn = e.target.closest("[data-act]");
+  if (!actBtn) return;
+  const act = actBtn.dataset.act;
+  const link = links.find(x=> x.id === id);
+  if (act === "edit" && link){
+    openLinkDialog("edit", link);
+  }
+  if (act === "del"){
+    if (confirm("Delete this link?")){
+      try{ await deleteLinkById(id); } catch(err){ console.error(err); }
+    }
+  }
+});
+
+/* Drag reorder links */
+linksGrid.addEventListener("dragstart", (e)=>{
+  const card = e.target.closest(".linkCard");
+  if (!card) return;
+  dragId = card.dataset.id;
+  card.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+});
+linksGrid.addEventListener("dragend", (e)=>{
+  const card = e.target.closest(".linkCard");
+  if (!card) return;
+  card.classList.remove("dragging");
+  dragId = null;
+});
+linksGrid.addEventListener("dragover", (e)=>{
+  e.preventDefault();
+  const over = e.target.closest(".linkCard");
+  if (!over || !dragId) return;
+  const overId = over.dataset.id;
+  if (overId === dragId) return;
+
+  // reorder in-memory for instant UI
+  const a = links.findIndex(x=> x.id === dragId);
+  const b = links.findIndex(x=> x.id === overId);
+  if (a < 0 || b < 0) return;
+
+  const next = [...links];
+  const [moved] = next.splice(a, 1);
+  next.splice(b, 0, moved);
+  links = next;
+  renderLinks();
+});
+linksGrid.addEventListener("drop", async (e)=>{
+  e.preventDefault();
+  if (!dragId) return;
+  try{
+    const ids = [...links].sort((x,y)=>Number(x.order||0)-Number(y.order||0)).map(x=>x.id);
+    // our render drag reorders links array, but Firestore ordering is by "order"
+    // so persist current visual order by reading DOM order:
+    const domIds = $$(".linkCard", linksGrid).map(el=> el.dataset.id);
+    if (domIds.length) await persistLinkOrder(domIds);
+  }catch(err){ console.error(err); }
+});
+
+/* Tasks dialogs */
+newTaskBtn.addEventListener("click", ()=>{
+  taskDialogTitle.textContent = "New task";
+  taskCreateBtn.textContent = "Create";
+  taskDesc.value = "";
+  taskAssigned.value = "";
+  taskStatus.value = "todo";
+  taskPriority.value = "med";
+  taskDue.value = "";
+  taskNotes.value = "";
+  taskDialog.showModal();
+  setTimeout(()=> taskDesc.focus(), 30);
+});
+taskDialog.addEventListener("close", async ()=>{
+  if (taskDialog.returnValue !== "ok") return;
+  try{
+    await createTask({
+      desc: taskDesc.value.trim() || "Lorem ipsum",
+      assigned: taskAssigned.value.trim(),
+      status: taskStatus.value,
+      priority: taskPriority.value,
+      due: taskDue.value || "",
+      notes: taskNotes.value.trim()
+    });
+  }catch(err){ console.error(err); }
+});
+
+/* Tasks inline editing */
+let patchTimer = null;
+let pendingPatch = null;
+function scheduleTaskPatch(id, patch){
+  pendingPatch = { id, patch: { ...pendingPatch?.patch, ...patch } };
+  if (patchTimer) clearTimeout(patchTimer);
+  patchTimer = setTimeout(async ()=>{
+    if (!pendingPatch) return;
+    const { id:tid, patch:pp } = pendingPatch;
+    pendingPatch = null;
+    try{ await patchTask(tid, pp); } catch(err){ console.error(err); }
+  }, 350);
 }
 
-function boot(){
-  initTheme();
-  loadLocal();
-  autosync=true; autosyncToggle.checked=true;
+tasksBody.addEventListener("input", (e)=>{
+  const row = e.target.closest("tr[data-id]");
+  if (!row) return;
+  const id = row.dataset.id;
+  const field = e.target.dataset.field;
+  if (!field) return;
 
-  if(!Array.isArray(state.links)) state.links=[];
-  if(!Array.isArray(state.tasks)) state.tasks=[];
-  if(!state.notes) state.notes="Lorem ipsum...";
-  if(!state.workspaceName) state.workspaceName="Team Hub";
+  let val = e.target.value;
+  if (field === "due") val = val || "";
+  scheduleTaskPatch(id, { [field]: val });
+});
 
-  renderAll();
+tasksBody.addEventListener("click", async (e)=>{
+  const row = e.target.closest("tr[data-id]");
+  if (!row) return;
+  const id = row.dataset.id;
+  const btn = e.target.closest("[data-act='del']");
+  if (!btn) return;
+  if (confirm("Delete this task?")){
+    try{ await deleteTask(id); } catch(err){ console.error(err); }
+  }
+});
 
-  if(!getToken()){ openLogin(); setSyncPill("warn","Locked"); }
-  else syncFromServer().catch(()=>{});
+filterStatus.addEventListener("change", renderTasks);
+filterPriority.addEventListener("change", renderTasks);
+sortTasks.addEventListener("change", renderTasks);
 
-  window.addEventListener("online", ()=>{ toast("Back online"); if(getToken()) syncFromServer().catch(()=>{}); });
-  window.addEventListener("offline", ()=>{ toast("Offline (local cache)"); setSyncPill("warn","Offline (local)"); });
-}
-boot();
+/* Notes */
+notesBox.addEventListener("input", scheduleNotesSave);
+
+/* Export/Import */
+exportBtn.addEventListener("click", ()=>{
+  download(`teamhub-export-${Date.now()}.json`, stateAsJSON());
+});
+importFile.addEventListener("change", async ()=>{
+  const f = importFile.files?.[0];
+  if (!f) return;
+  try{
+    const txt = await f.text();
+    const obj = JSON.parse(txt);
+    if (!confirm("Import will replace current data. Continue?")) return;
+    await importFromJSON(obj);
+  }catch(err){
+    alert("Import failed. Check JSON format.");
+    console.error(err);
+  }finally{
+    importFile.value = "";
+  }
+});
+
+/* Init */
+(async function init(){
+  loadTheme();
+
+  showAuth("");
+  setAuthFooter("Preparing database…");
+
+  try{
+    await ensureBootstrap();
+    setAuthFooter("Checking PIN…");
+    await fetchRemotePinHash();
+    startConfigWatch();
+
+    const auto = await tryAutoUnlock();
+    if (!auto){
+      showAuth("");
+      setAuthFooter("Enter PIN to unlock.");
+    } else {
+      startSubscriptions();
+    }
+  }catch(err){
+    console.error(err);
+    showAuth("Connection error. Check Firebase config/rules.");
+    setAuthFooter("Failed to connect.");
+  }
+})();

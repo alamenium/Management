@@ -1,362 +1,296 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
   <title>Team Hub</title>
-  <meta name="color-scheme" content="dark light"/>
-  <link rel="icon" href="assets/logo.png"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css"/>
-  <script defer src="script.js"></script>
+  <link rel="icon" href="./assets/logo.png" />
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <div class="bg"></div>
+  <!-- Background -->
+  <div class="bg" aria-hidden="true"></div>
 
-  <header class="topbar" role="banner">
-    <div class="brand" role="button" tabindex="0" aria-label="Go to Dashboard" data-nav="dashboard">
-      <img class="brand__logo" src="assets/logo.png" alt="Logo"/>
-      <div class="brand__text">
-        <div class="brand__title">Team Hub</div>
-        <div class="brand__sub">Links • Tasks • Notes</div>
-      </div>
-    </div>
-
-    <div class="topbar__spacer"></div>
-
-    <div class="search">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 18a8 8 0 1 1 5.293-14.293A8 8 0 0 1 10 18Zm11 3-6.1-6.1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      <input id="globalSearch" type="search" placeholder="Search tasks, people, notes..." autocomplete="off"/>
-      <button id="clearSearch" class="chip chip--ghost" type="button">Clear</button>
-    </div>
-
-    <div class="actions">
-      <button id="themeToggle" class="chip" type="button" aria-label="Toggle theme">
-        <span class="dot dot--accent"></span>
-        <span>Theme</span>
-      </button>
-
-      <button id="syncNow" class="chip" type="button" aria-label="Sync now">
-        <span class="dot dot--ok"></span>
-        <span>Sync</span>
-      </button>
-
-      <button id="exportBtn" class="chip chip--ghost" type="button">Export</button>
-      <button id="importBtn" class="chip chip--ghost" type="button">Import</button>
-      <input id="importFile" type="file" accept="application/json" hidden/>
-
-      <button id="logoutBtn" class="chip chip--danger" type="button" title="Log out">Log out</button>
-    </div>
-  </header>
-
-  <nav class="nav" aria-label="Primary">
-    <button class="nav__item is-active" data-view="dashboard">Dashboard</button>
-    <button class="nav__item" data-view="links">Quick Links</button>
-    <button class="nav__item" data-view="tasks">Tasks</button>
-    <button class="nav__item" data-view="notes">Shared Notes</button>
-    <button class="nav__item" data-view="settings">Settings</button>
-  </nav>
-
-  <main class="wrap" role="main">
-    <section class="statusbar" aria-live="polite">
-      <div class="statusbar__left">
-        <span class="pill" id="syncPill"><span class="dot dot--warn"></span> Not synced yet</span>
-        <span class="pill pill--ghost" id="localPill">Local cache enabled</span>
-      </div>
-      <div class="statusbar__right">
-        <span class="tiny" id="lastSaved">—</span>
-      </div>
-    </section>
-
-    <section id="view-dashboard" class="view is-active">
-      <div class="grid grid--2">
-        <section class="card">
-          <div class="card__head">
-            <h2>Today</h2>
-            <div class="card__tools">
-              <button class="chip chip--ghost" id="addTaskQuick">+ Task</button>
-            </div>
-          </div>
-          <div class="kpis">
-            <div class="kpi">
-              <div class="kpi__label">Pending</div>
-              <div class="kpi__value" id="kpiPending">0</div>
-            </div>
-            <div class="kpi">
-              <div class="kpi__label">In progress</div>
-              <div class="kpi__value" id="kpiProgress">0</div>
-            </div>
-            <div class="kpi">
-              <div class="kpi__label">Completed</div>
-              <div class="kpi__value" id="kpiDone">0</div>
-            </div>
-          </div>
-
-          <div class="list" id="dashboardList">
-            <div class="empty">No tasks yet. Add one 👇</div>
-          </div>
-        </section>
-
-        <section class="card">
-          <div class="card__head">
-            <h2>Quick Links</h2>
-            <div class="card__tools">
-              <button class="chip chip--ghost" id="addLinkQuick">+ Link</button>
-            </div>
-          </div>
-          <div id="dashboardLinks" class="links"></div>
-          <div class="muted mt-10">Tip: drag to reorder links.</div>
-        </section>
+  <!-- Auth gate -->
+  <div id="authOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="overlay__card">
+      <div class="overlay__brand">
+        <img class="overlay__logo" src="./assets/logo.png" alt="Logo" />
+        <div class="overlay__text">
+          <div class="overlay__kicker">TEAM HUB</div>
+          <h1 id="authTitle" class="overlay__title">Enter PIN</h1>
+          <p class="overlay__sub">This PIN is cached on your device. If it changes, you’ll be asked again.</p>
+        </div>
       </div>
 
-      <section class="card mt-16">
-        <div class="card__head">
-          <h2>Shared Notes</h2>
-          <div class="card__tools">
-            <button class="chip chip--ghost" id="saveNotesBtn">Save</button>
-          </div>
+      <form id="authForm" class="authForm">
+        <label class="field">
+          <span class="field__label">PIN</span>
+          <input id="pinInput" class="input" type="password" inputmode="numeric" autocomplete="one-time-code" placeholder="••••" maxlength="12" required />
+        </label>
+        <div class="authForm__row">
+          <button class="btn btn--primary" type="submit">Unlock</button>
+          <button id="pinClearBtn" class="btn btn--ghost" type="button">Forget on this device</button>
         </div>
-        <textarea id="sharedNotes" class="notes" rows="8" placeholder="Lorem ipsum..."></textarea>
-        <div class="muted mt-10">Anyone with access can update this.</div>
-      </section>
-    </section>
-
-    <section id="view-links" class="view">
-      <section class="card">
-        <div class="card__head">
-          <h2>Quick Links</h2>
-          <div class="card__tools">
-            <button class="chip" id="newLinkBtn">+ Add link</button>
-          </div>
-        </div>
-
-        <form id="linkForm" class="form is-hidden" autocomplete="off">
-          <div class="form__row">
-            <label>
-              <span>Name</span>
-              <input id="linkName" type="text" placeholder="e.g., Notion" required/>
-            </label>
-            <label>
-              <span>URL</span>
-              <input id="linkUrl" type="url" placeholder="https://..." required/>
-            </label>
-            <label>
-              <span>Group</span>
-              <input id="linkGroup" type="text" placeholder="e.g., Dev / Ops / Docs"/>
-            </label>
-          </div>
-          <div class="form__row form__row--actions">
-            <button class="chip" type="submit">Add</button>
-            <button id="cancelLink" class="chip chip--ghost" type="button">Cancel</button>
-          </div>
-        </form>
-
-        <div class="toolbar">
-          <div class="toolbar__left">
-            <span class="pill pill--ghost" id="linkCount">0 links</span>
-          </div>
-          <div class="toolbar__right">
-            <select id="linkFilter" class="select">
-              <option value="">All groups</option>
-            </select>
-          </div>
-        </div>
-
-        <div id="linksContainer" class="links links--grid"></div>
-      </section>
-    </section>
-
-    <section id="view-tasks" class="view">
-      <section class="card">
-        <div class="card__head">
-          <h2>Tasks</h2>
-          <div class="card__tools">
-            <button class="chip" id="newTaskBtn">+ New task</button>
-          </div>
-        </div>
-
-        <form id="taskForm" class="form is-hidden" autocomplete="off">
-          <div class="form__row">
-            <label class="grow">
-              <span>Description</span>
-              <input id="taskDescription" type="text" placeholder="What needs to happen?" required/>
-            </label>
-          </div>
-
-          <div class="form__row">
-            <label>
-              <span>Assigned to</span>
-              <input id="taskAssignedTo" type="text" placeholder="Name" required/>
-            </label>
-            <label>
-              <span>Status</span>
-              <select id="taskStatus" class="select">
-                <option>Pending</option>
-                <option>In Progress</option>
-                <option>Completed</option>
-              </select>
-            </label>
-            <label>
-              <span>Priority</span>
-              <select id="taskPriority" class="select">
-                <option value="Low">Low</option>
-                <option value="Medium" selected>Medium</option>
-                <option value="High">High</option>
-              </select>
-            </label>
-            <label>
-              <span>Due</span>
-              <input id="taskDue" type="date"/>
-            </label>
-          </div>
-
-          <div class="form__row">
-            <label class="grow">
-              <span>Notes</span>
-              <textarea id="taskNotes" rows="2" placeholder="Extra context..."></textarea>
-            </label>
-          </div>
-
-          <div class="form__row form__row--actions">
-            <button class="chip" type="submit">Add task</button>
-            <button id="cancelTask" class="chip chip--ghost" type="button">Cancel</button>
-          </div>
-        </form>
-
-        <div class="toolbar">
-          <div class="toolbar__left">
-            <span class="pill pill--ghost" id="taskCount">0 tasks</span>
-            <select id="statusFilter" class="select">
-              <option value="">All statuses</option>
-              <option value="Pending">Pending</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Completed">Completed</option>
-            </select>
-            <select id="priorityFilter" class="select">
-              <option value="">All priorities</option>
-              <option value="High">High</option>
-              <option value="Medium">Medium</option>
-              <option value="Low">Low</option>
-            </select>
-          </div>
-          <div class="toolbar__right">
-            <select id="sortTasks" class="select">
-              <option value="updated_desc">Sort: recently updated</option>
-              <option value="due_asc">Sort: due date</option>
-              <option value="priority_desc">Sort: priority</option>
-              <option value="assignee_asc">Sort: assignee</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="table">
-          <div class="table__head">
-            <div>Description</div>
-            <div>Assigned</div>
-            <div>Status</div>
-            <div>Priority</div>
-            <div>Due</div>
-            <div>Notes</div>
-            <div></div>
-          </div>
-          <div id="tasksTableBody" class="table__body"></div>
-          <div id="tasksEmpty" class="empty is-hidden">No tasks match your filters.</div>
-        </div>
-      </section>
-    </section>
-
-    <section id="view-notes" class="view">
-      <section class="card">
-        <div class="card__head">
-          <h2>Shared Notes</h2>
-          <div class="card__tools">
-            <button class="chip" id="notesSaveBtn">Save</button>
-          </div>
-        </div>
-        <textarea id="sharedNotes2" class="notes" rows="16" placeholder="Lorem ipsum..."></textarea>
-      </section>
-    </section>
-
-    <section id="view-settings" class="view">
-      <section class="card">
-        <div class="card__head">
-          <h2>Settings</h2>
-        </div>
-
-        <div class="settings">
-          <div class="setting">
-            <div>
-              <div class="setting__title">Autosync</div>
-              <div class="setting__desc">Saves changes automatically (also cached locally).</div>
-            </div>
-            <label class="switch">
-              <input id="autosyncToggle" type="checkbox" checked>
-              <span class="slider"></span>
-            </label>
-          </div>
-
-          <div class="setting">
-            <div>
-              <div class="setting__title">Workspace name</div>
-              <div class="setting__desc">Shown in the top-left.</div>
-            </div>
-            <input id="workspaceName" class="input" type="text" placeholder="Team Hub"/>
-          </div>
-
-          <div class="setting">
-            <div>
-              <div class="setting__title">Security</div>
-              <div class="setting__desc">Protected by a PIN set in Netlify environment variables.</div>
-            </div>
-            <button id="changePinHint" class="chip chip--ghost" type="button">How to set PIN</button>
-          </div>
-
-          <div class="setting">
-            <div>
-              <div class="setting__title">Danger zone</div>
-              <div class="setting__desc">Clear everything (local + server).</div>
-            </div>
-            <button id="clearAll" class="chip chip--danger" type="button">Clear data</button>
-          </div>
-        </div>
-
-        <div class="muted mt-16">
-          If something is missing, ipsum lorem.
-        </div>
-      </section>
-    </section>
-  </main>
-
-  <footer class="footer" role="contentinfo">
-    <div class="footer__left">
-      <span class="dot dot--accent"></span>
-      <span id="footerName">Team Hub</span>
-      <span class="sep">•</span>
-      <span class="muted">Netlify-ready</span>
-    </div>
-    <div class="footer__right muted">
-      <span id="footerMeta">© <span id="year"></span></span>
-    </div>
-  </footer>
-
-  <div id="loginModal" class="modal" aria-hidden="true">
-    <div class="modal__backdrop" data-close="login"></div>
-    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-      <div class="modal__head">
-        <div class="modal__title" id="loginTitle">Enter PIN</div>
-        <button class="x" type="button" data-close="login" aria-label="Close">×</button>
-      </div>
-      <p class="muted">This workspace is protected. Ask the admin for the PIN.</p>
-      <form id="loginForm" class="modal__form">
-        <input id="pinInput" class="input input--big" inputmode="numeric" autocomplete="one-time-code" placeholder="••••" minlength="4" required>
-        <button class="chip chip--wide" type="submit">Unlock</button>
+        <p id="authMsg" class="hint" role="status"></p>
       </form>
-      <div class="tiny muted" id="loginErr"></div>
+
+      <div class="tiny">
+        <span class="dot"></span>
+        <span id="authFooterText">Connecting…</span>
+      </div>
     </div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <!-- App -->
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="brand">
+        <img class="brand__logo" src="./assets/logo.png" alt="Logo" />
+        <div class="brand__text">
+          <div class="brand__name">Team Hub</div>
+          <div class="brand__sub">Links • Tasks • Shared Notes</div>
+        </div>
+      </div>
+
+      <div class="topbar__actions">
+        <div class="search">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="2"/><path d="M16.5 16.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input id="globalSearch" class="search__input" placeholder="Search links, tasks, notes…" />
+        </div>
+
+        <button id="themeToggle" class="btn btn--pill" type="button" title="Toggle theme">
+          <span class="btn__dot"></span>
+          <span id="themeLabel">Dark</span>
+        </button>
+
+        <button id="logoutBtn" class="btn btn--pill" type="button" title="Lock">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 16h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M13 19l-3-3 3-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 8V7a4 4 0 0 0-8 0v10a4 4 0 0 0 8 0v-1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Lock
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Dashboard -->
+    <section class="card card--hero">
+      <div class="hero">
+        <div>
+          <div class="kicker"><span class="dot"></span> Dashboard</div>
+          <h2 class="hero__title">Everything in one place</h2>
+          <p class="hero__sub">Quick links, task tracking, and shared notes—synced for the whole team.</p>
+        </div>
+        <div class="hero__stats">
+          <div class="stat">
+            <div class="stat__num" id="statLinks">—</div>
+            <div class="stat__lbl">Links</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num" id="statTasks">—</div>
+            <div class="stat__lbl">Tasks</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num" id="statOpen">—</div>
+            <div class="stat__lbl">Open</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick links -->
+    <section class="card">
+      <div class="sectionHead">
+        <div>
+          <div class="kicker"><span class="dot"></span> Quick Links</div>
+          <h3 class="h3">Useful shortcuts</h3>
+          <p class="muted">Add, edit, delete, and drag to reorder.</p>
+        </div>
+        <button id="newLinkBtn" class="btn btn--primary" type="button">+ New link</button>
+      </div>
+
+      <div id="linksGrid" class="linksGrid" aria-live="polite"></div>
+    </section>
+
+    <!-- Tasks -->
+    <section class="card">
+      <div class="sectionHead">
+        <div>
+          <div class="kicker"><span class="dot"></span> Tasks</div>
+          <h3 class="h3">Track work</h3>
+          <p class="muted">Inline editing. Filters and sorting happen locally (fast).</p>
+        </div>
+        <button id="newTaskBtn" class="btn btn--primary" type="button">+ New task</button>
+      </div>
+
+      <div class="taskTools">
+        <div class="pill"><span id="taskCount">0</span>&nbsp;tasks</div>
+
+        <select id="filterStatus" class="select">
+          <option value="all">All statuses</option>
+          <option value="todo">To do</option>
+          <option value="doing">Doing</option>
+          <option value="blocked">Blocked</option>
+          <option value="done">Done</option>
+        </select>
+
+        <select id="filterPriority" class="select">
+          <option value="all">All priorities</option>
+          <option value="low">Low</option>
+          <option value="med">Medium</option>
+          <option value="high">High</option>
+        </select>
+
+        <select id="sortTasks" class="select select--right">
+          <option value="updatedDesc">Sort: recently updated</option>
+          <option value="dueAsc">Sort: due date</option>
+          <option value="priorityDesc">Sort: priority</option>
+          <option value="createdDesc">Sort: newest</option>
+        </select>
+      </div>
+
+      <div class="tableWrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>Assigned</th>
+              <th>Status</th>
+              <th>Priority</th>
+              <th>Due</th>
+              <th>Notes</th>
+              <th class="th--right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tasksBody"></tbody>
+        </table>
+      </div>
+
+      <div id="tasksEmpty" class="empty" hidden>No tasks match your filters.</div>
+    </section>
+
+    <!-- Shared Notes -->
+    <section class="card">
+      <div class="sectionHead">
+        <div>
+          <div class="kicker"><span class="dot"></span> Shared Notes</div>
+          <h3 class="h3">Team scratchpad</h3>
+          <p class="muted">Everyone sees the same notes. Autosaves.</p>
+        </div>
+        <div class="rightMeta">
+          <span id="notesStatus" class="hint">—</span>
+        </div>
+      </div>
+
+      <textarea id="notesBox" class="notes" rows="10" placeholder="Write notes here…"></textarea>
+    </section>
+
+    <footer class="footer">
+      <div class="footer__left">
+        <span class="dot"></span>
+        <span>Team Hub</span>
+      </div>
+      <div class="footer__right">
+        <button id="exportBtn" class="btn btn--ghost" type="button">Export JSON</button>
+        <label class="btn btn--ghost" for="importFile">Import JSON</label>
+        <input id="importFile" type="file" accept="application/json" hidden />
+      </div>
+    </footer>
+  </main>
+
+  <!-- Modals -->
+  <dialog id="linkDialog" class="dialog">
+    <form id="linkForm" method="dialog" class="dialog__card">
+      <div class="dialog__head">
+        <h3 class="dialog__title" id="linkDialogTitle">New link</h3>
+        <button class="iconBtn" value="cancel" aria-label="Close">
+          <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <label class="field">
+        <span class="field__label">Title</span>
+        <input id="linkTitle" class="input" required />
+      </label>
+
+      <label class="field">
+        <span class="field__label">URL</span>
+        <input id="linkUrl" class="input" type="url" required placeholder="https://…" />
+      </label>
+
+      <label class="field">
+        <span class="field__label">Description</span>
+        <input id="linkDesc" class="input" placeholder="Lorem ipsum if missing." />
+      </label>
+
+      <div class="dialog__actions">
+        <button id="linkSaveBtn" class="btn btn--primary" value="ok">Save</button>
+        <button class="btn btn--ghost" value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="taskDialog" class="dialog">
+    <form id="taskForm" method="dialog" class="dialog__card">
+      <div class="dialog__head">
+        <h3 class="dialog__title" id="taskDialogTitle">New task</h3>
+        <button class="iconBtn" value="cancel" aria-label="Close">
+          <svg class="ico" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <label class="field">
+        <span class="field__label">Description</span>
+        <input id="taskDesc" class="input" required />
+      </label>
+
+      <div class="grid2">
+        <label class="field">
+          <span class="field__label">Assigned to</span>
+          <input id="taskAssigned" class="input" placeholder="Name" />
+        </label>
+
+        <label class="field">
+          <span class="field__label">Due date</span>
+          <input id="taskDue" class="input" type="date" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label class="field">
+          <span class="field__label">Status</span>
+          <select id="taskStatus" class="select">
+            <option value="todo">To do</option>
+            <option value="doing">Doing</option>
+            <option value="blocked">Blocked</option>
+            <option value="done">Done</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field__label">Priority</span>
+          <select id="taskPriority" class="select">
+            <option value="low">Low</option>
+            <option value="med" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="field">
+        <span class="field__label">Notes</span>
+        <textarea id="taskNotes" class="notes notes--mini" rows="4" placeholder="Anyone can edit."></textarea>
+      </label>
+
+      <div class="dialog__actions">
+        <button id="taskCreateBtn" class="btn btn--primary" value="ok">Create</button>
+        <button class="btn btn--ghost" value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="./script.js"></script>
 </body>
 </html>
