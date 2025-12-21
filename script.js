@@ -43,7 +43,7 @@ const LS_PINHASH = "sh_pin_hash_v1";
 const LS_ME = "sh_me_v1";
 
 /* First-run PIN (only if meta/config doesn’t exist yet) */
-const DEFAULT_PIN = "1234";
+const DEFAULT_PIN = "0750";
 
 /* Firestore refs */
 const configRef = doc(db, "meta", "config");

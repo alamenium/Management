@@ -64,7 +64,7 @@ exports.handler = async (event) => {
       `Notes:`,
       `${task.notes || ""}`,
       "",
-      `Task ID: ${task.id || ""}`,
+      `Check it out: https://capston1.netlify.app/`,
     ];
 
     const text = lines.join("\n");
