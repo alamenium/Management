@@ -6,12 +6,14 @@
   <meta name="color-scheme" content="dark light" />
   <title>Team Hub</title>
   <link rel="icon" href="./assets/logo.png" />
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
+  <!-- Background -->
   <div class="bg" aria-hidden="true"></div>
 
-  <!-- PIN Auth -->
+  <!-- Auth gate -->
   <div id="authOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="authTitle">
     <div class="overlay__card">
       <div class="overlay__brand">
@@ -19,7 +21,7 @@
         <div class="overlay__text">
           <div class="overlay__kicker">TEAM HUB</div>
           <h1 id="authTitle" class="overlay__title">Enter PIN</h1>
-          <p class="overlay__sub">Your session is cached on this device. If the PIN changes, you’ll be asked again.</p>
+          <p class="overlay__sub">This PIN is cached on your device. If it changes, you’ll be asked again.</p>
         </div>
       </div>
 
@@ -43,8 +45,8 @@
   </div>
 
   <!-- Who are you -->
-  <div id="whoOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="whoTitle" hidden>
-    <div class="overlay__card">
+  <div id="whoOverlay" class="overlay overlay--soft" role="dialog" aria-modal="true" aria-labelledby="whoTitle" hidden>
+    <div class="overlay__card overlay__card--wide">
       <div class="overlay__brand">
         <img class="overlay__logo" src="./assets/logo.png" alt="Logo" />
         <div class="overlay__text">
@@ -54,57 +56,16 @@
         </div>
       </div>
 
-      <div id="whoList" class="whoList" aria-live="polite">
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Youssef Elkhayat">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Youssef Elkhayat</span>
-            <span class="whoBtn__team">CAD Team</span>
-          </span>
-          <span class="whoBtn__tag">CAD Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Youssef Roshdy">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Youssef Roshdy</span>
-            <span class="whoBtn__team">Prototype Team</span>
-          </span>
-          <span class="whoBtn__tag">Prototype Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Mohamed AlAiniah">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Mohamed AlAiniah</span>
-            <span class="whoBtn__team">CAD Team</span>
-          </span>
-          <span class="whoBtn__tag">CAD Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Ahmed Saeed">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Ahmed Saeed</span>
-            <span class="whoBtn__team">Prototype Team</span>
-          </span>
-          <span class="whoBtn__tag">Prototype Team</span>
-        </button>
-
-        <button class="btn btn--ghost whoBtn" type="button" data-who="Mohamed ElMansy">
-          <span class="whoBtn__left">
-            <span class="whoBtn__name">Mohamed ElMansy</span>
-            <span class="whoBtn__team">CAD Team</span>
-          </span>
-          <span class="whoBtn__tag">CAD Team</span>
-        </button>
-
-</div>
+      <div id="whoOptions" class="whoOptions" aria-live="polite"></div>
 
       <div class="tiny">
         <span class="dot"></span>
-        <span id="whoHint">You can switch later from the header.</span>
+        <span>You can switch later from the header.</span>
       </div>
     </div>
   </div>
 
+  <!-- App -->
   <header class="topbar">
     <div class="topbar__inner">
       <div class="brand">
@@ -121,15 +82,18 @@
           <input id="globalSearch" class="search__input" placeholder="Search links, tasks, notes…" />
         </div>
 
-        <button id="whoBtn" class="btn btn--pill" type="button" title="Switch user">
-          <span class="btn__dot"></span>
-          <span id="whoLabel">—</span>
-        </button>
-
         <button id="themeToggle" class="btn btn--pill" type="button" title="Toggle theme">
           <span class="btn__dot"></span>
           <span id="themeLabel">Dark</span>
         </button>
+        <button id="whoBtn" class="btn btn--pill" type="button" title="Switch user">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M20 21a8 8 0 1 0-16 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M12 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          <span id="whoLabel">Pick name</span>
+        </button>
+
 
         <button id="logoutBtn" class="btn btn--pill" type="button" title="Lock">
           <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 16h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M13 19l-3-3 3-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 8V7a4 4 0 0 0-8 0v10a4 4 0 0 0 8 0v-1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -140,6 +104,7 @@
   </header>
 
   <main class="wrap">
+    <!-- Dashboard -->
     <section class="card card--hero">
       <div class="hero">
         <div>
@@ -148,14 +113,23 @@
           <p class="hero__sub">Quick links, task tracking, and shared notes—synced for the whole team.</p>
         </div>
         <div class="hero__stats">
-          <div class="stat"><div class="stat__num" id="statLinks">—</div><div class="stat__lbl">Links</div></div>
-          <div class="stat"><div class="stat__num" id="statTasks">—</div><div class="stat__lbl">Tasks</div></div>
-          <div class="stat"><div class="stat__num" id="statOpen">—</div><div class="stat__lbl">Open</div></div>
+          <div class="stat">
+            <div class="stat__num" id="statLinks">—</div>
+            <div class="stat__lbl">Links</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num" id="statTasks">—</div>
+            <div class="stat__lbl">Tasks</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num" id="statOpen">—</div>
+            <div class="stat__lbl">Open</div>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Links -->
+    <!-- Quick links -->
     <section class="card">
       <div class="sectionHead">
         <div>
@@ -165,6 +139,7 @@
         </div>
         <button id="newLinkBtn" class="btn btn--primary" type="button">+ New link</button>
       </div>
+
       <div id="linksGrid" class="linksGrid" aria-live="polite"></div>
     </section>
 
@@ -174,7 +149,7 @@
         <div>
           <div class="kicker"><span class="dot"></span> Tasks</div>
           <h3 class="h3">Track work</h3>
-          <p class="muted">Tasks highlight if you’re involved. Each member has their own “done” checkbox.</p>
+          <p class="muted">Inline editing. Filters and sorting happen locally (fast).</p>
         </div>
         <button id="newTaskBtn" class="btn btn--primary" type="button">+ New task</button>
       </div>
@@ -183,10 +158,11 @@
         <div class="pill"><span id="taskCount">0</span>&nbsp;tasks</div>
 
         <select id="filterStatus" class="select">
-          <option value="all">All</option>
-          <option value="open">Open</option>
-          <option value="done">Fully done</option>
-          <option value="mine">My tasks</option>
+          <option value="all">All statuses</option>
+          <option value="todo">To do</option>
+          <option value="doing">Doing</option>
+          <option value="blocked">Blocked</option>
+          <option value="done">Done</option>
         </select>
 
         <select id="filterPriority" class="select">
@@ -209,10 +185,10 @@
           <thead>
             <tr>
               <th>Description</th>
-              <th>Assigned to</th>
+              <th>Assigned</th>
+              <th>Status</th>
               <th>Priority</th>
               <th>Due</th>
-              <th>Status / My done</th>
               <th>Notes</th>
               <th class="th--right">Actions</th>
             </tr>
@@ -224,7 +200,7 @@
       <div id="tasksEmpty" class="empty" hidden>No tasks match your filters.</div>
     </section>
 
-    <!-- Notes -->
+    <!-- Shared Notes -->
     <section class="card">
       <div class="sectionHead">
         <div>
@@ -232,13 +208,19 @@
           <h3 class="h3">Team scratchpad</h3>
           <p class="muted">Everyone sees the same notes. Autosaves.</p>
         </div>
-        <div class="rightMeta"><span id="notesStatus" class="hint">—</span></div>
+        <div class="rightMeta">
+          <span id="notesStatus" class="hint">—</span>
+        </div>
       </div>
+
       <textarea id="notesBox" class="notes" rows="10" placeholder="Write notes here…"></textarea>
     </section>
 
     <footer class="footer">
-      <div class="footer__left"><span class="dot"></span><span>Team Hub</span></div>
+      <div class="footer__left">
+        <span class="dot"></span>
+        <span>Team Hub</span>
+      </div>
       <div class="footer__right">
         <button id="exportBtn" class="btn btn--ghost" type="button">Export JSON</button>
         <label class="btn btn--ghost" for="importFile">Import JSON</label>
@@ -247,7 +229,7 @@
     </footer>
   </main>
 
-  <!-- Link dialog -->
+  <!-- Modals -->
   <dialog id="linkDialog" class="dialog">
     <form id="linkForm" method="dialog" class="dialog__card">
       <div class="dialog__head">
@@ -279,7 +261,6 @@
     </form>
   </dialog>
 
-  <!-- Task dialog -->
   <dialog id="taskDialog" class="dialog">
     <form id="taskForm" method="dialog" class="dialog__card">
       <div class="dialog__head">
@@ -294,29 +275,37 @@
         <input id="taskDesc" class="input" required />
       </label>
 
-      <label class="field">
-        <span class="field__label">Assign to (multi-select)</span>
-        <select id="taskAssignees" class="select select--multi" multiple size="8">
-          <optgroup label="People">
-            <option value="Youssef Elkhayat">Youssef Elkhayat</option>
-            <option value="Youssef Roshdy">Youssef Roshdy</option>
-            <option value="Mohamed AlAiniah">Mohamed AlAiniah</option>
-            <option value="Ahmed Saeed">Ahmed Saeed</option>
-            <option value="Mohamed ElMansy">Mohamed ElMansy</option>
-          </optgroup>
-          <optgroup label="Teams">
-            <option value="CAD Team">CAD Team</option>
-            <option value="Prototype Team">Prototype Team</option>
-            <option value="All">All</option>
-          </optgroup>
-        </select>
-        <div class="hint">Tip: you can select multiple names + teams together.</div>
-      </label>
-
       <div class="grid2">
+        <label class="field">
+          <span class="field__label">Assigned to</span>
+          <span class="field__label">Assigned to <span class="muted small">(Ctrl/Cmd for multiple)</span></span>
+          <select id="taskAssigned" class="select" multiple>
+            <option value="youssef_elkhayat">Youssef Elkhayat</option>
+            <option value="youssef_roshdy">Youssef Roshdy</option>
+            <option value="mohamed_alainiah">Mohamed AlAiniah</option>
+            <option value="ahmed_saeed">Ahmed Saeed</option>
+            <option value="mohamed_elmansy">Mohamed ElMansy</option>
+            <option value="cad_team">CAD Team</option>
+            <option value="prototype_team">Prototype Team</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+
         <label class="field">
           <span class="field__label">Due date</span>
           <input id="taskDue" class="input" type="date" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label class="field">
+          <span class="field__label">Status</span>
+          <select id="taskStatus" class="select">
+            <option value="todo">To do</option>
+            <option value="doing">Doing</option>
+            <option value="blocked">Blocked</option>
+            <option value="done">Done</option>
+          </select>
         </label>
 
         <label class="field">
@@ -335,12 +324,12 @@
       </label>
 
       <div class="dialog__actions">
-        <button id="taskSaveBtn" class="btn btn--primary" value="ok">Create</button>
+        <button id="taskCreateBtn" class="btn btn--primary" value="ok">Create</button>
         <button class="btn btn--ghost" value="cancel">Cancel</button>
       </div>
     </form>
   </dialog>
 
-  <script src="./script.js"></script>
+  <script type="module" src="./script.js"></script>
 </body>
 </html>
