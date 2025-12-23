@@ -317,6 +317,10 @@ function setMeByKey(key){
   localStorage.setItem(LS_ME, me.key);
   meName.textContent = me.name;
   meTeam.textContent = me.team;
+  if (sessionStorage.getItem("sh_reloaded_after_me") !== me.key){
+    sessionStorage.setItem("sh_reloaded_after_me", me.key);
+    window.location.reload();
+  }
 }
 
 async function ensureIdentity(){
