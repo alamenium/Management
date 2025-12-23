@@ -317,6 +317,7 @@ function setMeByKey(key){
   localStorage.setItem(LS_ME, me.key);
   meName.textContent = me.name;
   meTeam.textContent = me.team;
+  window.location.reload();
 }
 
 async function ensureIdentity(){
