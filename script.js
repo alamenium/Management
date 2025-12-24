@@ -890,7 +890,24 @@ async function init(){
   // Who
   const cached = getMeFromLS();
   if (cached) setMe(cached);
+
   else openWho();
+// --- Leader audio for Mohamed AlAiniah (play once on first interaction) ---
+  if (me && me.key === "mohamed_alainiah") {
+    const leaderAudio = new Audio("./leader.mp3"); // put leader.mp3 next to index.html (same folder) or adjust path
+    leaderAudio.preload = "auto";
+
+    const playOnce = async () => {
+      try { await leaderAudio.play(); } catch (_) {}
+      window.removeEventListener("pointerdown", playOnce);
+      window.removeEventListener("keydown", playOnce);
+      window.removeEventListener("touchstart", playOnce);
+    };
+
+    window.addEventListener("pointerdown", playOnce, { once: true });
+    window.addEventListener("keydown", playOnce, { once: true });
+    window.addEventListener("touchstart", playOnce, { once: true, passive: true });
+  }
 
   // PIN
   const cachedPin = localStorage.getItem(LS_PIN) || "";
