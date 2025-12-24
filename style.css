@@ -38,18 +38,25 @@ body{
   margin:0;
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
   color:var(--ink);
-  background:radial-gradient(1200px 700px at 20% 10%, rgba(16,184,215,.18), transparent 60%),
-  radial-gradient(900px 520px at 90% 0%, rgba(16,184,215,.12), transparent 60%),
-  linear-gradient(180deg, var(--bg1), var(--bg2));
+  /* fallback */
+  background: var(--bg2) radial-gradient(1200px 700px at 20% 10%, rgba(16, 184, 215, .18) 0%, rgba(16, 184, 215, 0) 60%) radial-gradient(900px 520px at 90% 0%, rgba(16, 184, 215, .12) 0%, rgba(16, 184, 215, 0) 62%) linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%) no-repeat fixed;
 }
 .bg{
-  position:fixed; inset:0;
-  background:radial-gradient(900px 520px at 20% 0%, rgba(255,255,255,.08), transparent 55%),
-  radial-gradient(900px 520px at 80% 20%, rgba(255,255,255,.06), transparent 55%);
+  position:fixed;
+  inset:-20vh -20vw;          /* oversized so it never clips on iOS/Android */
   pointer-events:none;
-  opacity:.55;
-}
+  z-index:-1;
 
+  background: radial-gradient(900px 520px at 20% 0%, rgba(255, 255, 255, .10) 0%, rgba(255, 255, 255, 0) 55%) radial-gradient(900px 520px at 80% 20%, rgba(255, 255, 255, .08) 0%, rgba(255, 255, 255, 0) 55%) radial-gradient(1100px 700px at 50% 110%, rgba(16, 184, 215, .10) 0%, rgba(16, 184, 215, 0) 60%) no-repeat fixed;
+  opacity:.55;
+
+  transform:translateZ(0);    /* prevents mobile compositing seams */
+  will-change:transform;
+}
+@supports (-webkit-overflow-scrolling: touch){
+  body{ background-attachment:scroll; }
+  .bg{  background-attachment:scroll; }
+}
 .dot{width:10px;height:10px;border-radius:99px;background:rgba(16,184,215,.55);box-shadow:0 0 0 4px rgba(16,184,215,.12)}
 
 .topbar{position:sticky;top:0;z-index:10;background:linear-gradient(180deg, rgba(0,0,0,.30), transparent);backdrop-filter: blur(10px)}
