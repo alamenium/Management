@@ -650,7 +650,7 @@ $("#newTaskBtn").addEventListener("click", ()=>{
   assignMenu.hidden = true;
   assignPicker.setAttribute("aria-expanded","false");
 
-  taskDesc.value = "";
+  taskDesc.value = " ";
   taskDue.value = "";
   taskPriority.value = "med";
   taskNotes.value = "";
